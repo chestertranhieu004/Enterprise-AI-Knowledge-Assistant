@@ -6,9 +6,12 @@ from typing import Any
 
 from app.core.config import settings
 from app.rag.prompts import (
+    build_conversational_agent_messages,
     build_grounded_rag_messages,
+    build_query_rewrite_messages,
     build_query_suggestion_messages,
     is_prompt_injection,
+    sanitize_user_query,
 )
 from app.rag.providers.base import (
     BaseEmbeddingProvider,
@@ -20,6 +23,7 @@ from app.rag.providers.base import (
 )
 from app.rag.providers.mock_provider import MockLLMProvider
 from app.schemas.common import ABSTENTION_MESSAGE_VI
+from app.schemas.user import UserContext
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +108,8 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
 
 class OpenAILLMProvider(BaseLLMProvider):
     """
-    OpenAI Chat Completions Provider enforcing JSON-structured Vietnamese grounded answers
-    with strict [chunk_id] citations and verbatim quotes.
+    OpenAI Chat Completions Provider supporting natural conversational agent interaction,
+    multi-turn query coreference rewriting, and JSON-structured grounded answers with [chunk_id].
     """
 
     provider_name: str = "openai"
@@ -119,13 +123,14 @@ class OpenAILLMProvider(BaseLLMProvider):
         self.api_key = api_key if api_key is not None else settings.OPENAI_API_KEY
         self.model_name = model_name or settings.OPENAI_LLM_MODEL
         self.base_url = base_url.rstrip("/")
-        self._fallback_suggester = MockLLMProvider()
+        self._fallback_provider = MockLLMProvider()
 
     def _chat_completion(
         self,
         system_prompt: str,
         user_prompt: str,
         json_object_mode: bool = True,
+        temperature: float = 0.0,
     ) -> str:
         if not self.api_key:
             raise RuntimeError("OPENAI_API_KEY is not configured for OpenAILLMProvider.")
@@ -142,7 +147,7 @@ class OpenAILLMProvider(BaseLLMProvider):
             kwargs: dict[str, Any] = {
                 "model": self.model_name,
                 "messages": messages,
-                "temperature": 0.0,
+                "temperature": temperature,
             }
             if json_object_mode:
                 kwargs["response_format"] = {"type": "json_object"}
@@ -152,7 +157,7 @@ class OpenAILLMProvider(BaseLLMProvider):
             req_body: dict[str, Any] = {
                 "model": self.model_name,
                 "messages": messages,
-                "temperature": 0.0,
+                "temperature": temperature,
             }
             if json_object_mode:
                 req_body["response_format"] = {"type": "json_object"}
@@ -213,24 +218,108 @@ class OpenAILLMProvider(BaseLLMProvider):
             suggested_queries=suggested,
         )
 
+    def generate_conversational_reply(
+        self,
+        query: str,
+        user: UserContext | None = None,
+        history: list[dict[str, str]] | None = None,
+        intent: str = "greeting",
+    ) -> RawLLMGeneration:
+        if is_prompt_injection(query):
+            return RawLLMGeneration(
+                answer=ABSTENTION_MESSAGE_VI,
+                abstained=True,
+                citations=[],
+                suggested_queries=self._fallback_provider.suggest_rephrased_queries(query),
+            )
+
+        if not self.api_key:
+            return self._fallback_provider.generate_conversational_reply(
+                query=query, user=user, history=history, intent=intent
+            )
+
+        system_prompt, user_prompt = build_conversational_agent_messages(
+            query=query, user=user, history=history, intent=intent
+        )
+        try:
+            raw_content = self._chat_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                json_object_mode=True,
+                temperature=0.6,
+            )
+            cleaned = raw_content.strip().strip("`")
+            if cleaned.lower().startswith("json"):
+                cleaned = cleaned[4:].strip()
+            parsed = json.loads(cleaned)
+            answer = str(parsed.get("answer") or "").strip()
+            raw_suggestions = parsed.get("suggested_queries") or []
+            suggested = [str(s).strip() for s in raw_suggestions if str(s).strip()][:3]
+            if answer:
+                if len(suggested) < 2:
+                    suggested = self._fallback_provider.suggest_rephrased_queries(query)
+                return RawLLMGeneration(
+                    answer=answer,
+                    abstained=False,
+                    citations=[],
+                    suggested_queries=suggested,
+                )
+        except Exception as exc:
+            logger.debug("OpenAI conversational reply fallback triggered: %s", exc)
+
+        return self._fallback_provider.generate_conversational_reply(
+            query=query, user=user, history=history, intent=intent
+        )
+
+    def rewrite_query_with_history(
+        self,
+        query: str,
+        history: list[dict[str, str]] | None = None,
+    ) -> str:
+        cleaned = sanitize_user_query(query)
+        if not cleaned or not history or is_prompt_injection(cleaned):
+            return cleaned
+        if not self.api_key:
+            return self._fallback_provider.rewrite_query_with_history(cleaned, history)
+
+        system_prompt, user_prompt = build_query_rewrite_messages(cleaned, history)
+        try:
+            rewritten = self._chat_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                json_object_mode=False,
+                temperature=0.0,
+            )
+            rewritten_clean = sanitize_user_query(rewritten.strip().strip('"').strip("'"))
+            if rewritten_clean and len(rewritten_clean) <= 500:
+                return rewritten_clean
+        except Exception as exc:
+            logger.debug("OpenAI rewrite_query_with_history fallback triggered: %s", exc)
+
+        return self._fallback_provider.rewrite_query_with_history(cleaned, history)
+
     def generate_grounded_answer(
         self,
         query: str,
         chunks: list[RetrievedChunk],
+        history: list[dict[str, str]] | None = None,
     ) -> RawLLMGeneration:
         if is_prompt_injection(query) or not chunks:
             return RawLLMGeneration(
                 answer=ABSTENTION_MESSAGE_VI,
                 abstained=True,
                 citations=[],
-                suggested_queries=self._fallback_suggester.suggest_rephrased_queries(query),
+                suggested_queries=self._fallback_provider.suggest_rephrased_queries(query),
             )
 
-        system_prompt, user_prompt = build_grounded_rag_messages(query, chunks)
+        system_prompt, user_prompt = build_grounded_rag_messages(
+            query=query, chunks=chunks, history=history
+        )
         raw_content = self._chat_completion(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             json_object_mode=True,
+            temperature=0.0,
         )
         try:
             return self._parse_generation_json(raw_content, query)
@@ -240,7 +329,7 @@ class OpenAILLMProvider(BaseLLMProvider):
                 answer=ABSTENTION_MESSAGE_VI,
                 abstained=True,
                 citations=[],
-                suggested_queries=self._fallback_suggester.suggest_rephrased_queries(query),
+                suggested_queries=self._fallback_provider.suggest_rephrased_queries(query),
             )
 
     def suggest_rephrased_queries(
@@ -248,7 +337,7 @@ class OpenAILLMProvider(BaseLLMProvider):
         query: str,
     ) -> list[str]:
         if is_prompt_injection(query) or not self.api_key:
-            return self._fallback_suggester.suggest_rephrased_queries(query)
+            return self._fallback_provider.suggest_rephrased_queries(query)
 
         system_prompt, user_prompt = build_query_suggestion_messages(query)
         try:
@@ -256,6 +345,7 @@ class OpenAILLMProvider(BaseLLMProvider):
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 json_object_mode=False,
+                temperature=0.2,
             )
             parsed = json.loads(raw_content.strip().strip("`").lstrip("json").strip())
             if isinstance(parsed, dict):
@@ -270,4 +360,4 @@ class OpenAILLMProvider(BaseLLMProvider):
         except Exception as exc:
             logger.debug("OpenAI suggest_rephrased_queries fallback triggered: %s", exc)
 
-        return self._fallback_suggester.suggest_rephrased_queries(query)
+        return self._fallback_provider.suggest_rephrased_queries(query)

@@ -1,4 +1,5 @@
 # File: backend/app/db/seed.py
+from datetime import datetime, timezone
 import hashlib
 import logging
 import math
@@ -145,12 +146,104 @@ def _embed_seed_texts(texts: list[str]) -> tuple[list[list[float]], str, str]:
         )
 
 
+def _reindex_mismatched_documents(db: Session) -> int:
+    """
+    Re-embed chunks for any existing ready, non-deleted Document whose
+    `embedding_provider` differs from the currently active embedding provider
+    (e.g. after switching EMBEDDING_PROVIDER between mock / gemini / openai).
+
+    Wrapped safely so an invalid/missing API key or offline network logs a clear
+    warning and leaves existing vectors untouched without crashing startup.
+    """
+    try:
+        from app.rag.providers.factory import get_embedding_provider
+
+        provider = get_embedding_provider()
+    except Exception as exc:
+        logger.warning(
+            "Skipping auto-reindex: active embedding provider could not be initialized (%s).",
+            exc,
+        )
+        return 0
+
+    active_provider = str(getattr(provider, "provider_name", "mock"))
+    active_model = str(getattr(provider, "model_name", f"{active_provider}-768"))
+
+    mismatched_docs = db.scalars(
+        select(Document).where(
+            Document.status == DocumentStatus.READY.value,
+            Document.is_deleted.is_(False),
+            Document.embedding_provider != active_provider,
+        )
+    ).all()
+
+    if not mismatched_docs:
+        return 0
+
+    logger.info(
+        "Auto-reindexing %d ready document(s) for active embedding provider '%s' (%s).",
+        len(mismatched_docs),
+        active_provider,
+        active_model,
+    )
+
+    reindexed_count = 0
+    for doc in mismatched_docs:
+        chunks = db.scalars(
+            select(DocumentChunk)
+            .where(DocumentChunk.document_id == doc.id)
+            .order_by(DocumentChunk.chunk_index.asc())
+        ).all()
+
+        if not chunks:
+            doc.embedding_provider = active_provider
+            doc.embedding_model = active_model
+            doc.updated_at = datetime.now(timezone.utc)
+            reindexed_count += 1
+            continue
+
+        chunk_texts = [chunk.content for chunk in chunks]
+        try:
+            new_vectors = provider.embed_texts(chunk_texts)
+            if len(new_vectors) != len(chunks):
+                raise ValueError(
+                    f"Embedding count mismatch for document {doc.id}: "
+                    f"expected {len(chunks)}, got {len(new_vectors)}"
+                )
+        except Exception as exc:
+            logger.warning(
+                "Auto-reindex aborted for document '%s' (%s) with provider '%s': %s. "
+                "Existing embeddings preserved so startup continues safely.",
+                doc.file_name,
+                doc.id,
+                active_provider,
+                exc,
+            )
+            break
+
+        for chunk_obj, new_vec in zip(chunks, new_vectors):
+            chunk_obj.embedding = new_vec
+
+        doc.embedding_provider = active_provider
+        doc.embedding_model = active_model
+        doc.updated_at = datetime.now(timezone.utc)
+        reindexed_count += 1
+
+    return reindexed_count
+
+
 def seed_database(db: Session) -> dict[str, int]:
     """
     Idempotently seed default departments, demo users across roles/departments,
     and initial sample documents (public, department, restricted) matching docs/ERD.md.
+    Also auto-reindexes existing ready documents whenever the active embedding provider changes.
     """
-    created_counts = {"departments": 0, "users": 0, "documents": 0}
+    created_counts = {
+        "departments": 0,
+        "users": 0,
+        "documents": 0,
+        "reindexed_documents": 0,
+    }
 
     # 1. Seed Departments
     existing_dept_codes = set(db.scalars(select(Department.code)).all())
@@ -362,6 +455,11 @@ def seed_database(db: Session) -> dict[str, int]:
                 )
 
             created_counts["documents"] += 1
+
+    db.flush()
+
+    # 4. Auto-reindex existing ready documents if the active embedding provider changed
+    created_counts["reindexed_documents"] = _reindex_mismatched_documents(db)
 
     db.commit()
     return created_counts

@@ -7,6 +7,7 @@ import {
   ChatMessageRead,
   ChatSessionSummary,
   CitationItem,
+  HealthResponse,
 } from '../types/api';
 
 /**
@@ -58,6 +59,25 @@ export const ChatPage: React.FC = () => {
   const [highlightedChunkId, setHighlightedChunkId] = useState<string | null>(
     null
   );
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchHealth = async () => {
+      try {
+        const res = await apiClient.getHealth();
+        if (mounted) {
+          setHealth(res);
+        }
+      } catch {
+        // Keep subtle badge hidden/fallback if health endpoint is unreachable
+      }
+    };
+    void fetchHealth();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const loadSessions = useCallback(async () => {
     setIsLoadingSessions(true);
@@ -309,11 +329,39 @@ export const ChatPage: React.FC = () => {
 
       {/* Main Chat Area */}
       <section className="chat-main">
-        {/* Starter Prompt Bar */}
+        {/* Starter Prompt Bar + Active AI Engine Indicator */}
         <div className="starter-prompts-bar">
-          <div className="starter-prompts-label">
-            💡 Câu hỏi mẫu kiểm thử 3 Kịch bản (Nhấn để hỏi ngay):
+          <div className="starter-prompts-top-row">
+            <div className="starter-prompts-label">
+              💡 Câu hỏi mẫu kiểm thử 3 Kịch bản (Nhấn để hỏi ngay):
+            </div>
+
+            {health && (
+              <div
+                className={`ai-engine-badge ${
+                  health.llm_provider.toLowerCase() === 'gemini' ||
+                  health.llm_provider.toLowerCase() === 'openai'
+                    ? 'ai-engine-live'
+                    : 'ai-engine-mock'
+                }`}
+                data-testid="ai-engine-badge"
+                data-llm-provider={health.llm_provider.toLowerCase()}
+                title={`LLM Provider: ${health.llm_provider} | Embedding Provider: ${health.embedding_provider} | DB: ${health.database}`}
+              >
+                <span className="ai-engine-dot" aria-hidden="true" />
+                <span>
+                  {health.llm_provider.toLowerCase() === 'gemini'
+                    ? 'AI Engine: Gemini'
+                    : health.llm_provider.toLowerCase() === 'openai'
+                    ? 'AI Engine: OpenAI'
+                    : health.llm_provider.toLowerCase() === 'mock'
+                    ? 'Chế độ Demo Offline (Mock) — Cấu hình Gemini/OpenAI API key trong .env để chat AI tự do hoàn toàn'
+                    : `AI Engine: ${health.llm_provider}`}
+                </span>
+              </div>
+            )}
           </div>
+
           <div className="starter-prompts-list">
             {QUICK_STARTER_PROMPTS.map((item, idx) => (
               <button
@@ -355,12 +403,12 @@ export const ChatPage: React.FC = () => {
               <div className="empty-state-icon" aria-hidden="true">
                 🏛️
               </div>
-              <h2>Trợ lý Tri thức Doanh nghiệp (Grounded RAG)</h2>
+              <h2>Trợ lý Tri thức Doanh nghiệp (Conversational Grounded RAG)</h2>
               <p>
-                Đặt câu hỏi bằng Tiếng Việt hoặc Tiếng Anh. Hệ thống tự động kiểm
-                tra phân quyền RBAC tiền truy xuất, trích xuất nguyên văn đoạn
-                tài liệu có độ tương đồng <code>&ge; 0.65</code> và xác thực từng{' '}
-                <code>[chunk_id]</code> trước khi hiển thị.
+                Trò chuyện tự nhiên hoặc đặt câu hỏi bằng Tiếng Việt / Tiếng Anh
+                về tài liệu nội bộ. Hệ thống hỗ trợ hội thoại nhiều lượt, tự động
+                lọc phân quyền RBAC tiền truy xuất, trích xuất nguyên văn tài liệu
+                và xác thực từng <code>[chunk_id]</code> trước khi hiển thị.
               </p>
 
               <div className="empty-state-cards">
@@ -383,19 +431,35 @@ export const ChatPage: React.FC = () => {
           ) : (
             messages.map((msg) => {
               const isUser = msg.role === 'user';
+              const citationsList = msg.citations || [];
               const isAbstention =
                 !isUser &&
                 (msg.found === false ||
                   msg.content.trim() === ABSTENTION_MESSAGE_VI);
+              const isGroundedWithCitations =
+                !isUser &&
+                !isAbstention &&
+                msg.found === true &&
+                citationsList.length > 0;
+              const isConversationalReply =
+                !isUser &&
+                !isAbstention &&
+                msg.found === true &&
+                citationsList.length === 0;
 
               return (
                 <div
                   key={msg.id}
                   className={`chat-message-row ${
-                    isUser ? 'chat-message-user' : 'chat-message-assistant'
+                    isUser
+                      ? 'chat-message-user'
+                      : isConversationalReply
+                      ? 'chat-message-assistant chat-message-conversational'
+                      : 'chat-message-assistant'
                   }`}
                   data-testid={`chat-message-${msg.role}`}
                   data-found={msg.found !== undefined && msg.found !== null ? String(msg.found) : undefined}
+                  data-conversational={isConversationalReply ? 'true' : undefined}
                 >
                   <div className="chat-message-avatar" aria-hidden="true">
                     {isUser ? '👤' : '🤖'}
@@ -410,13 +474,21 @@ export const ChatPage: React.FC = () => {
                       </strong>
 
                       <div className="chat-message-badges">
-                        {!isUser && msg.found === true && (
+                        {isGroundedWithCitations && (
                           <span
                             className="status-pill status-pill-verified"
                             data-testid="scenario2-verified-pill"
                           >
-                            ✓ Scenario 2: Đã xác thực {msg.citations.length} nguồn
+                            ✓ Scenario 2: Đã xác thực {citationsList.length} nguồn
                             trích dẫn
+                          </span>
+                        )}
+                        {isConversationalReply && (
+                          <span
+                            className="status-pill status-pill-conversational"
+                            data-testid="conversational-reply-pill"
+                          >
+                            💬 Trợ lý AI
                           </span>
                         )}
                         {!isUser && isAbstention && (
@@ -487,20 +559,18 @@ export const ChatPage: React.FC = () => {
                           )}
                       </div>
                     ) : (
-                      /* SCENARIO 2 UI: Grounded answer + Verified Citations */
+                      /* Natural Conversational Reply (found=true, citations=[]) OR SCENARIO 2 UI (found=true, citations>0) */
                       <>
                         <div className="chat-message-content">
-                          {isUser
+                          {isUser || isConversationalReply
                             ? msg.content
                             : renderGroundedAnswerWithChunkLinks(
                                 msg.content,
-                                msg.citations || []
+                                citationsList
                               )}
                         </div>
 
-                        {!isUser &&
-                          msg.citations &&
-                          msg.citations.length > 0 && (
+                        {isGroundedWithCitations && (
                             <div
                               className="citations-section"
                               data-testid="citations-section"
@@ -508,7 +578,7 @@ export const ChatPage: React.FC = () => {
                               <div className="citations-section-header">
                                 <span>
                                   📚 Nguồn trích dẫn đã kiểm chứng (
-                                  {msg.citations.length} tài liệu tham chiếu)
+                                  {citationsList.length} tài liệu tham chiếu)
                                 </span>
                                 <span className="citations-section-sub">
                                   Post-Generation Citation Verifier: Whitelist
@@ -516,7 +586,7 @@ export const ChatPage: React.FC = () => {
                                 </span>
                               </div>
                               <div className="citations-grid">
-                                {msg.citations.map((cit, cIdx) => (
+                                {citationsList.map((cit, cIdx) => (
                                   <CitationCard
                                     key={`${cit.chunk_id}-${cIdx}`}
                                     citation={cit}
@@ -579,7 +649,7 @@ export const ChatPage: React.FC = () => {
             className="chat-text-input"
             value={queryInput}
             onChange={(e) => setQueryInput(e.target.value)}
-            placeholder="Nhập câu hỏi tra cứu tri thức nội bộ (VD: Chính sách nghỉ phép của công ty như thế nào?)..."
+            placeholder="Trò chuyện tự nhiên hoặc đặt bất kỳ câu hỏi nào về tài liệu nội bộ..."
             disabled={isSendingQuery}
             maxLength={4000}
             data-testid="chat-query-input"

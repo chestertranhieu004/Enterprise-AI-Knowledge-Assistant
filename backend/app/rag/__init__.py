@@ -1,4 +1,5 @@
 # File: backend/app/rag/__init__.py
+from app.rag.agent_router import classify_conversational_intent
 from app.rag.providers.base import (
     BaseEmbeddingProvider,
     BaseLLMProvider,
@@ -21,6 +22,7 @@ __all__ = [
     "RawLLMGeneration",
     "RetrievedChunk",
     "VerificationResult",
+    "classify_conversational_intent",
     "get_embedding_provider",
     "get_llm_provider",
 ]

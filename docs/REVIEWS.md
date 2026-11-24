@@ -239,3 +239,42 @@ Executed directly in `d:/enterprise-knowledge-assistant/frontend` with Node `v24
 
 ### 2. Sign-Off Decision
 **APPROVED.** Docker build configuration is hardened against host OS binary contamination and ready for `docker compose build --no-cache frontend backend` on the user's Docker host.
+
+---
+
+## Post-Release Verification — Natural Conversational AI Agent Upgrade
+
+- **Reviewed Authors**: `@rag_engineer`, `@backend_core`, `@frontend`, `@qa_security`
+- **Review Date**: 2026-11-24
+- **Status**: **PASSED / APPROVED**
+
+### 1. Upgrade Scope & Code Verification
+
+| Track | Modified / Created Files | Verification Summary | Status |
+| :--- | :--- | :--- | :--- |
+| **`@rag_engineer`** | `backend/app/rag/agent_router.py`, `backend/app/rag/service.py`, `backend/app/rag/retriever.py`, `backend/app/rag/prompts.py`, `backend/app/rag/providers/{base,mock_provider,openai_provider,gemini_provider}.py` | Added safe `classify_conversational_intent()` (greetings, identity, capabilities, thanks, farewell, smalltalk; always returns `None` on prompt injection, numbers, SQLi, or enterprise/factual/out-of-domain keywords), multi-turn conversation memory (last 6 messages) with `rewrite_query_with_history()`, `generate_conversational_reply()`, expanded everyday Vietnamese paraphrases, and calibrated neural similarity threshold (`0.48` neural / `0.65` mock / explicit override). | **PASS** |
+| **`@backend_core`** | `backend/app/db/seed.py` | Added `_reindex_mismatched_documents(db)` invoked by `seed_database(db)` to automatically re-embed chunks when `EMBEDDING_PROVIDER` switches (`mock` ↔ `gemini` ↔ `openai`), with idempotent no-op when matching and graceful exception handling on missing/invalid API keys without corrupting existing vectors or crashing startup. | **PASS** |
+| **`@frontend`** | `frontend/src/pages/ChatPage.tsx`, `frontend/src/index.css` | Distinguished conversational AI replies (`found === true && citations.length === 0`, friendly `💬 Trợ lý AI` bubble without empty citations section) from Scenario 2 grounded answers (`CitationCard` list) and Scenario 1 abstention alerts; added `GET /api/v1/health` active `ai-engine-badge` (Gemini / OpenAI / Offline Mock guidance) and updated conversational input placeholder. Verified `dist/index.html` matches `@frontend`'s clean build output (`index-QMKo8DWd.js`, `index-CeS1rvW_.css`, `TSC_EXIT=0`, `BUILD_EXIT=0`, 40 modules transformed). *(Note: reviewer's unsandboxed `tsc`/`vite` re-run prompt timed out after 60s without user response; static code review + built `dist/` verification + `@frontend` real build log in #53 confirm 0 errors.)* | **PASS** |
+| **`@qa_security`** | `tests/test_conversational_agent.py` (21 new tests), `tests/rag_eval_report.json` | Covers natural social turns, everyday Vietnamese paraphrased RAG queries, 5-turn chained follow-ups with zero history bleed, greeting-wrapped prompt-injection blocking, paraphrased RBAC isolation, auto-reindex on provider switch + graceful failure, and calibrated retriever thresholds. | **PASS** |
+
+### 2. Independent Verification Execution Output (Reviewer Re-Run)
+
+#### Full Pytest Suite (`72 passed in 7.87s`, exit code `0`)
+- `tests/test_api_endpoints.py`: **5 passed**
+- `tests/test_conversational_agent.py`: **21 passed** *(new)*
+- `tests/test_ingestion_parsers.py`: **5 passed**
+- `tests/test_redteam_security.py`: **17 passed**
+- `tests/test_scenario1_not_found.py`: **7 passed**
+- `tests/test_scenario2_citation_verification.py`: **8 passed**
+- `tests/test_scenario3_rbac_unauthorized.py`: **9 passed**
+- **Total**: **72 / 72 passed (100.00%, 0 failed, 0 skipped)**
+
+#### RAG Evaluation & Security Benchmark (`python tests/eval_rag.py`, exit code `0`, `944.30 ms`)
+- **Scenario 1 Abstention Accuracy**: **100.00%** (`4/4`)
+- **Scenario 2 Citation Precision & Verification Accuracy**: **100.00%** (`6/6` citations, `6/6` queries)
+- **Scenario 3 RBAC Pre-Retrieval Zero-Leakage Rate**: **100.00%** (`5/5`)
+- **Red-Team Prompt Injection Block Rate**: **100.00%** (`3/3`)
+- **Overall Answer Groundedness**: **100.00%** (`18/18`)
+
+### 3. Sign-Off Decision
+**APPROVED.** All 3 Mandatory Scenarios (Scenario 1 abstention, Scenario 2 citation verification, Scenario 3 pre-retrieval SQL RBAC zero-leakage) remain 100% intact alongside the Natural Conversational AI Agent capabilities.

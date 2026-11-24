@@ -201,11 +201,16 @@ class PreRetrievalRBACRetriever:
         similarity_threshold: float | None = None,
     ) -> None:
         self.embedding_provider = embedding_provider or get_embedding_provider()
-        self.similarity_threshold = (
-            similarity_threshold
-            if similarity_threshold is not None
-            else settings.SIMILARITY_THRESHOLD
-        )
+        self._explicit_similarity_threshold: float | None = similarity_threshold
+        if similarity_threshold is not None:
+            self.similarity_threshold = similarity_threshold
+        elif getattr(self.embedding_provider, "provider_name", "mock") in (
+            "openai",
+            "gemini",
+        ):
+            self.similarity_threshold = min(settings.SIMILARITY_THRESHOLD, 0.48)
+        else:
+            self.similarity_threshold = settings.SIMILARITY_THRESHOLD
 
     @staticmethod
     def _wrap_as_llamaindex_node(

@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.user import UserContext
+
 
 def l2_normalize(vec: list[float], target_dim: int = 768) -> list[float]:
     """Ensure vector has exact target_dim and unit L2 norm."""
@@ -92,6 +94,7 @@ class BaseLLMProvider(ABC):
         self,
         query: str,
         chunks: list[RetrievedChunk],
+        history: list[dict[str, str]] | None = None,
     ) -> RawLLMGeneration:
         """
         Generates a Vietnamese (or query-language-matched) grounded answer using ONLY the provided
@@ -109,3 +112,37 @@ class BaseLLMProvider(ABC):
         Must NEVER reference or leak any unauthorized document titles or content.
         """
         ...
+
+    def generate_conversational_reply(
+        self,
+        query: str,
+        user: UserContext | None = None,
+        history: list[dict[str, str]] | None = None,
+        intent: str = "greeting",
+    ) -> RawLLMGeneration:
+        """
+        Generate a warm, natural Vietnamese conversational response for social/smalltalk intents
+        (greeting, identity, capabilities, thanks, farewell, smalltalk) without inventing policies
+        or leaking restricted documents.
+        """
+        name = user.full_name if user is not None and user.full_name else "bạn"
+        return RawLLMGeneration(
+            answer=(
+                f"Xin chào {name}! Mình là Trợ lý Tri thức Doanh nghiệp. "
+                "Bạn có thể trò chuyện tự nhiên hoặc đặt câu hỏi về các tài liệu nội bộ mà bạn có quyền truy cập nhé!"
+            ),
+            abstained=False,
+            citations=[],
+            suggested_queries=self.suggest_rephrased_queries(query),
+        )
+
+    def rewrite_query_with_history(
+        self,
+        query: str,
+        history: list[dict[str, str]] | None = None,
+    ) -> str:
+        """
+        Resolve multi-turn conversational coreference when `history` exists and `query`
+        refers back to an earlier topic. Defaults to returning `query` unchanged.
+        """
+        return query

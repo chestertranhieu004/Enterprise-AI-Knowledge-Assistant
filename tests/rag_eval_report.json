@@ -1,7 +1,7 @@
 {
   "project": "Enterprise Knowledge Assistant",
   "benchmark_version": "1.0.0",
-  "timestamp_utc": "2026-11-23T19:20:08.258292+00:00",
+  "timestamp_utc": "2026-11-24T12:52:59.529420+00:00",
   "providers": {
     "llm_provider": "mock (mock-grounded-vi)",
     "embedding_provider": "mock (mock-768, 768-dim L2-normalized)",
@@ -13,7 +13,7 @@
     "passed_queries": 18,
     "failed_queries": 0,
     "total_verified_citations": 6,
-    "total_duration_ms": 465.62
+    "total_duration_ms": 700.56
   },
   "metrics": {
     "scenario1_abstention_accuracy_pct": 100.0,
@@ -38,7 +38,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 22.32
+      "latency_ms": 29.58
     },
     {
       "case_id": "S1-02",
@@ -54,7 +54,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 10.38
+      "latency_ms": 17.81
     },
     {
       "case_id": "S1-03",
@@ -70,7 +70,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 9.03
+      "latency_ms": 13.72
     },
     {
       "case_id": "S1-04",
@@ -86,7 +86,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 14.96
+      "latency_ms": 25.33
     },
     {
       "case_id": "S2-01",
@@ -106,7 +106,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 13.81
+      "latency_ms": 29.17
     },
     {
       "case_id": "S2-02",
@@ -126,7 +126,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 13.33
+      "latency_ms": 16.1
     },
     {
       "case_id": "S2-03",
@@ -146,7 +146,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 23.75
+      "latency_ms": 30.19
     },
     {
       "case_id": "S2-04",
@@ -166,7 +166,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 12.29
+      "latency_ms": 18.76
     },
     {
       "case_id": "S2-05",
@@ -186,7 +186,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 13.27
+      "latency_ms": 20.84
     },
     {
       "case_id": "S2-06",
@@ -206,7 +206,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 13.91
+      "latency_ms": 17.75
     },
     {
       "case_id": "S3-01",
@@ -222,7 +222,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 11.51
+      "latency_ms": 18.57
     },
     {
       "case_id": "S3-02",
@@ -238,7 +238,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 9.42
+      "latency_ms": 17.37
     },
     {
       "case_id": "S3-03",
@@ -254,7 +254,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 9.38
+      "latency_ms": 12.19
     },
     {
       "case_id": "S3-04",
@@ -270,7 +270,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 10.21
+      "latency_ms": 15.3
     },
     {
       "case_id": "S3-05",
@@ -286,7 +286,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 11.04
+      "latency_ms": 17.3
     },
     {
       "case_id": "RT-01",
@@ -302,7 +302,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 2.95
+      "latency_ms": 3.56
     },
     {
       "case_id": "RT-02",
@@ -318,7 +318,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 2.86
+      "latency_ms": 5.2
     },
     {
       "case_id": "RT-03",
@@ -334,7 +334,7 @@
       "suggested_queries_count": 3,
       "zero_leakage_verified": true,
       "passed": true,
-      "latency_ms": 2.44
+      "latency_ms": 3.64
     }
   ]
 }
