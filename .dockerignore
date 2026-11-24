@@ -1,0 +1,51 @@
+# ==============================================================================
+# Enterprise Knowledge Assistant — Docker Build Context Ignore (.dockerignore)
+# Prevents host OS binaries (Windows node_modules, .venv), caches, secrets,
+# and runtime artifacts from entering Linux Docker build contexts.
+# ==============================================================================
+
+# Version control & local secrets
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+
+# Frontend host dependencies & build outputs (avoid Windows native binaries in Alpine!)
+**/node_modules
+**/dist
+**/build
+**/.vite
+**/*.tsbuildinfo
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+
+# Python host virtual environments & caches
+**/.venv
+**/venv
+**/ENV
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.coverage
+**/htmlcov
+**/*.egg-info
+
+# Tests, documentation & local runtime data
+tests
+docs
+backups
+data/uploads
+backend/data/uploads
+**/*.db
+**/*.sqlite3
+
+# IDE & OS artifacts
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+Desktop.ini

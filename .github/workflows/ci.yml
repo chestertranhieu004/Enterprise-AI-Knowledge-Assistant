@@ -1,0 +1,142 @@
+# ==============================================================================
+# Enterprise Knowledge Assistant — GitHub Actions CI Pipeline
+# Validates:
+#   1. Backend Python 3.11 Lint & Pytest Suite against PostgreSQL 16 + pgvector
+#      (Scenarios 1, 2, 3 with deterministic Mock LLM/Embedding Provider)
+#   2. Frontend React + TypeScript Typecheck & Vite Production Bundle Build
+#   3. Docker Compose Specification & Infrastructure Manifest Validation
+# ==============================================================================
+
+name: Enterprise Knowledge Assistant CI
+
+on:
+  push:
+    branches: ["main", "master", "develop"]
+  pull_request:
+    branches: ["main", "master", "develop"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # Job 1: Backend Lint, Schema Init & Pytest (Scenarios 1, 2, 3) with pgvector
+  # ----------------------------------------------------------------------------
+  backend-test:
+    name: Backend Lint & Pytest (PostgreSQL 16 + pgvector)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: eka_user
+          POSTGRES_PASSWORD: eka_password
+          POSTGRES_DB: eka_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U eka_user -d eka_db"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://eka_user:eka_password@localhost:5432/eka_db
+      JWT_SECRET_KEY: ci-test-jwt-secret-key-do-not-use-in-production
+      LLM_PROVIDER: mock
+      EMBEDDING_PROVIDER: mock
+      EMBEDDING_DIM: "768"
+      SIMILARITY_THRESHOLD: "0.65"
+      QUOTE_OVERLAP_THRESHOLD: "0.50"
+      UPLOAD_DIR: /tmp/eka_test_uploads
+      SEED_ON_STARTUP: "true"
+      PYTHONPATH: ${{ github.workspace }}/backend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Initialize PostgreSQL schema & pgvector extension (infra/postgres/init.sql)
+        env:
+          PGPASSWORD: eka_password
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+          psql -h localhost -p 5432 -U eka_user -d eka_db -v ON_ERROR_STOP=1 -f infra/postgres/init.sql
+
+      - name: Install backend Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install pytest pytest-asyncio httpx ruff
+
+      - name: Verify Python bytecode compilation & Ruff lint
+        run: |
+          python -m compileall -q backend/app
+          ruff check backend/app --select E9,F63,F7,F82
+
+      - name: Run Pytest suite (Scenarios 1, 2, 3, Ingestion & API Endpoints)
+        run: |
+          mkdir -p "$UPLOAD_DIR"
+          pytest tests/ -v --tb=short
+
+  # ----------------------------------------------------------------------------
+  # Job 2: Frontend TypeScript Typecheck & Vite Build
+  # ----------------------------------------------------------------------------
+  frontend-build:
+    name: Frontend TypeScript & Vite Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Run TypeScript type check
+        run: npx tsc --noEmit
+
+      - name: Build production SPA bundle
+        env:
+          VITE_API_BASE_URL: /api/v1
+        run: npm run build
+
+  # ----------------------------------------------------------------------------
+  # Job 3: Infrastructure & Docker Compose Validation
+  # ----------------------------------------------------------------------------
+  infra-validate:
+    name: Docker Compose & Infrastructure Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate .env.example and docker-compose.yml
+        run: |
+          cp .env.example .env
+          docker compose config --quiet

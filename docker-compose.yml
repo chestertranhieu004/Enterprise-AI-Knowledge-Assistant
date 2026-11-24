@@ -1,0 +1,111 @@
+# ==============================================================================
+# Enterprise Knowledge Assistant — Docker Compose Orchestration
+# Services:
+#   1. db       (PostgreSQL 16 + pgvector extension + schema init.sql)
+#   2. backend  (FastAPI + LlamaIndex + RBAC Retriever + Citation Verifier)
+#   3. frontend (React 18 + TypeScript SPA served via Nginx with /api proxy)
+# ==============================================================================
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: eka-postgres-pgvector
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eka_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eka_password}
+      POSTGRES_DB: ${POSTGRES_DB:-eka_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eka_user} -d ${POSTGRES_DB:-eka_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - eka_network
+
+  backend:
+    build:
+      context: .
+      dockerfile: ./infra/backend.Dockerfile
+    container_name: eka-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PROJECT_NAME: ${PROJECT_NAME:-Enterprise Knowledge Assistant}
+      API_V1_STR: ${API_V1_STR:-/api/v1}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-eka_user}:${POSTGRES_PASSWORD:-eka_password}@db:5432/${POSTGRES_DB:-eka_db}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-super-secret-enterprise-jwt-key-change-in-prod}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-mock}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_LLM_MODEL: ${OPENAI_LLM_MODEL:-gpt-4o-mini}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_LLM_MODEL: ${GEMINI_LLM_MODEL:-gemini-2.0-flash}
+      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-models/text-embedding-004}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
+      SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD:-0.65}
+      DEFAULT_TOP_K: ${DEFAULT_TOP_K:-5}
+      QUOTE_OVERLAP_THRESHOLD: ${QUOTE_OVERLAP_THRESHOLD:-0.50}
+      UPLOAD_DIR: ${UPLOAD_DIR:-/data/uploads}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-50}
+      CHUNK_SIZE: ${CHUNK_SIZE:-512}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-64}
+      INGESTION_MODE: ${INGESTION_MODE:-sync}
+      SEED_ON_STARTUP: ${SEED_ON_STARTUP:-true}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - upload_data:/data/uploads
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/v1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - eka_network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: ./infra/frontend.Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
+    container_name: eka-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:80/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - eka_network
+
+volumes:
+  postgres_data:
+    name: eka_postgres_data
+  upload_data:
+    name: eka_upload_data
+
+networks:
+  eka_network:
+    name: eka_network
+    driver: bridge

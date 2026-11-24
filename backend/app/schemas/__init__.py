@@ -1,0 +1,71 @@
+# File: backend/app/schemas/__init__.py
+from app.schemas.auth import LoginRequest, TokenResponse
+from app.schemas.chat import (
+    ChatMessageRead,
+    ChatQueryRequest,
+    ChatQueryResponse,
+    ChatSessionDetail,
+    ChatSessionSummary,
+    CitationItem,
+)
+from app.schemas.common import (
+    ABSTENTION_MESSAGE_VI,
+    ALLOWED_FILE_EXTENSIONS,
+    DEFAULT_SIMILARITY_THRESHOLD,
+    DEFAULT_TOP_K,
+    EMBEDDING_DIM,
+    MAX_UPLOAD_SIZE_BYTES,
+    AccessLevel,
+    DepartmentCode,
+    DocumentStatus,
+    ErrorResponse,
+    HealthResponse,
+    PermissionType,
+    UserRole,
+    VerificationStatus,
+)
+from app.schemas.document import (
+    DocumentACLUpdateRequest,
+    DocumentDeleteResponse,
+    DocumentPermissionEntry,
+    DocumentRead,
+)
+from app.schemas.user import (
+    UserContext,
+    UserCreateRequest,
+    UserPermissionUpdateRequest,
+    UserRead,
+)
+
+__all__ = [
+    "ABSTENTION_MESSAGE_VI",
+    "ALLOWED_FILE_EXTENSIONS",
+    "DEFAULT_SIMILARITY_THRESHOLD",
+    "DEFAULT_TOP_K",
+    "EMBEDDING_DIM",
+    "MAX_UPLOAD_SIZE_BYTES",
+    "AccessLevel",
+    "DepartmentCode",
+    "DocumentStatus",
+    "ErrorResponse",
+    "HealthResponse",
+    "PermissionType",
+    "UserRole",
+    "VerificationStatus",
+    "LoginRequest",
+    "TokenResponse",
+    "UserContext",
+    "UserRead",
+    "UserCreateRequest",
+    "UserPermissionUpdateRequest",
+    "DocumentPermissionEntry",
+    "DocumentRead",
+    "DocumentACLUpdateRequest",
+    "DocumentDeleteResponse",
+    "CitationItem",
+    "ChatQueryRequest",
+    "ChatQueryResponse",
+    "ChatMessageRead",
+    "ChatSessionSummary",
+    "ChatSessionDetail",
+]

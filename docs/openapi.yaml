@@ -1,0 +1,908 @@
+openapi: 3.1.0
+info:
+  title: Enterprise Knowledge Assistant API
+  version: 1.0.0
+  summary: Grounded Enterprise RAG API with Pre-Retrieval RBAC & Post-Generation Citation Verification
+  description: |
+    REST API specification for the **Enterprise Knowledge Assistant** (Hệ thống Trợ lý Tri thức Doanh nghiệp).
+
+    ### Core Guarantees (Three Mandatory Scenarios)
+    1. **Scenario 1 (`found: false` Abstention)**: When no authorized chunk meets the similarity threshold (`>= 0.65`), `POST /api/v1/chat/query` returns `found: false`, `answer: "Không tìm thấy thông tin phù hợp trong các tài liệu bạn có quyền truy cập."`, `citations: []`, and 2–3 `suggested_queries`.
+    2. **Scenario 2 (Post-Generation Citation Verification)**: Every citation in `citations` is deterministically verified against the retrieved authorized chunks (`chunk_id`, `document_id`, `file_name`, `page_or_sheet`, `quote`, `score`, `verification_status: "verified"`).
+    3. **Scenario 3 (Pre-Retrieval RBAC & Department ABAC)**: Access control is enforced inside the PostgreSQL/pgvector SQL `WHERE` clause prior to similarity ranking. Unauthorized documents never leak via answer content, citations, error messages, or document counts.
+servers:
+  - url: http://localhost:8000
+    description: Local / Docker Compose Backend Server
+
+tags:
+  - name: Health
+    description: System, database, pgvector, and LLM/Embedding provider readiness probes
+  - name: Auth
+    description: JWT authentication and current user session introspection
+  - name: Users
+    description: User management and RBAC/Department permission updates
+  - name: Documents
+    description: Multi-format document ingestion (PDF/DOCX/XLSX) and ACL administration
+  - name: Chat
+    description: Grounded RAG query endpoint and chat session history
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from `POST /api/v1/auth/login`
+
+  schemas:
+    UserRole:
+      type: string
+      enum: [admin, manager, employee, guest]
+      description: Role-Based Access Control (RBAC) level
+
+    DepartmentCode:
+      type: string
+      enum: [HR, Finance, Legal, Engineering, General]
+      description: Enterprise department code
+
+    AccessLevel:
+      type: string
+      enum: [public, department, restricted]
+      description: Document visibility tier
+
+    DocumentStatus:
+      type: string
+      enum: [processing, ready, failed]
+      description: Ingestion lifecycle status
+
+    VerificationStatus:
+      type: string
+      enum: [verified, stripped, unverified]
+      description: Post-generation citation verification outcome
+
+    ErrorResponse:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          examples: ["Invalid credentials"]
+        error_code:
+          type: ["string", "null"]
+          examples: ["AUTH_INVALID_CREDENTIALS"]
+
+    LoginRequest:
+      type: object
+      required: [password]
+      properties:
+        email:
+          type: ["string", "null"]
+          format: email
+          examples: ["eng.employee@company.vn"]
+        username:
+          type: ["string", "null"]
+          examples: ["eng.employee"]
+        password:
+          type: string
+          examples: ["Password123!"]
+      description: Provide either `email` or `username` along with `password`.
+
+    UserRead:
+      type: object
+      required:
+        - id
+        - email
+        - username
+        - full_name
+        - role
+        - department
+        - is_active
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+        full_name:
+          type: string
+        role:
+          $ref: "#/components/schemas/UserRole"
+        department:
+          $ref: "#/components/schemas/DepartmentCode"
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    TokenResponse:
+      type: object
+      required:
+        - access_token
+        - token_type
+        - expires_in
+        - user
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          default: bearer
+        expires_in:
+          type: integer
+          examples: [86400]
+        user:
+          $ref: "#/components/schemas/UserRead"
+
+    UserCreateRequest:
+      type: object
+      required:
+        - email
+        - username
+        - password
+        - full_name
+        - role
+        - department
+      properties:
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+          minLength: 3
+          maxLength: 100
+        password:
+          type: string
+          minLength: 8
+        full_name:
+          type: string
+        role:
+          $ref: "#/components/schemas/UserRole"
+        department:
+          $ref: "#/components/schemas/DepartmentCode"
+        is_active:
+          type: boolean
+          default: true
+
+    UserPermissionUpdateRequest:
+      type: object
+      properties:
+        role:
+          $ref: "#/components/schemas/UserRole"
+        department:
+          $ref: "#/components/schemas/DepartmentCode"
+        is_active:
+          type: ["boolean", "null"]
+
+    DocumentPermissionEntry:
+      type: object
+      properties:
+        id:
+          type: ["string", "null"]
+          format: uuid
+        user_id:
+          type: ["string", "null"]
+          format: uuid
+        department:
+          anyOf:
+            - $ref: "#/components/schemas/DepartmentCode"
+            - type: "null"
+        role:
+          anyOf:
+            - $ref: "#/components/schemas/UserRole"
+            - type: "null"
+        permission_type:
+          type: string
+          enum: [read, manage]
+          default: read
+
+    DocumentRead:
+      type: object
+      required:
+        - id
+        - title
+        - file_name
+        - file_type
+        - file_size_bytes
+        - department
+        - access_level
+        - allowed_roles
+        - uploaded_by
+        - status
+        - chunk_count
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        file_name:
+          type: string
+        file_type:
+          type: string
+          enum: [pdf, docx, xlsx, txt, md]
+        file_size_bytes:
+          type: integer
+        department:
+          $ref: "#/components/schemas/DepartmentCode"
+        access_level:
+          $ref: "#/components/schemas/AccessLevel"
+        allowed_roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/UserRole"
+        uploaded_by:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/DocumentStatus"
+        error_message:
+          type: ["string", "null"]
+        chunk_count:
+          type: integer
+        permissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentPermissionEntry"
+          default: []
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    DocumentACLUpdateRequest:
+      type: object
+      properties:
+        department:
+          $ref: "#/components/schemas/DepartmentCode"
+        access_level:
+          $ref: "#/components/schemas/AccessLevel"
+        allowed_roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/UserRole"
+        permissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentPermissionEntry"
+
+    CitationItem:
+      type: object
+      required:
+        - document_id
+        - file_name
+        - page_or_sheet
+        - chunk_id
+        - quote
+        - score
+        - verification_status
+      properties:
+        document_id:
+          type: string
+          format: uuid
+          description: UUID of the source document
+        file_name:
+          type: string
+          description: Authoritative filename from database record
+          examples: ["Quy_che_nghi_phep_2026.pdf"]
+        page_or_sheet:
+          type: string
+          description: Exact page label, section header, or Excel sheet + row range
+          examples: ["Page 4", "Sheet: Bang_Luong (Rows 1-20)"]
+        chunk_id:
+          type: string
+          format: uuid
+          description: Verified UUID of the retrieved authorized document chunk
+        quote:
+          type: string
+          description: Verbatim supporting excerpt verified against chunk.content
+          examples: ["Nhân viên chính thức được nghỉ phép năm 12 ngày hưởng nguyên lương."]
+        score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Cosine similarity score between query and chunk embedding
+          examples: [0.842]
+        verification_status:
+          $ref: "#/components/schemas/VerificationStatus"
+
+    ChatQueryRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 4000
+          description: User natural language question in Vietnamese or English
+          examples: ["Quy định số ngày nghỉ phép năm của nhân viên chính thức là bao nhiêu?"]
+        session_id:
+          type: ["string", "null"]
+          format: uuid
+          description: Optional existing chat session ID; if omitted, a new session is created
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 5
+          description: Maximum number of authorized chunks to retrieve above similarity threshold
+
+    ChatQueryResponse:
+      type: object
+      required:
+        - session_id
+        - message_id
+        - query
+        - answer
+        - found
+        - citations
+        - suggested_queries
+        - latency_ms
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        message_id:
+          type: string
+          format: uuid
+        query:
+          type: string
+        answer:
+          type: string
+          description: |
+            Grounded answer with inline `[chunk_id]` references when `found=true`, or the exact standard abstention message `"Không tìm thấy thông tin phù hợp trong các tài liệu bạn có quyền truy cập."` when `found=false`.
+        found:
+          type: boolean
+          description: "`true` if verified authorized chunks answered the query; `false` on Scenario 1 or Scenario 3 abstention."
+        citations:
+          type: array
+          items:
+            $ref: "#/components/schemas/CitationItem"
+          description: Verified citations list (always empty `[]` when `found=false`)
+        suggested_queries:
+          type: array
+          items:
+            type: string
+          minItems: 0
+          maxItems: 5
+          description: 2-3 suggested query rephrasings (mandatory when `found=false`) or follow-up questions
+          examples:
+            - ["Chính sách nghỉ phép năm cho nhân viên chính thức?", "Quy trình đăng ký nghỉ phép trên hệ thống HR?"]
+        latency_ms:
+          type: integer
+          description: End-to-end processing latency in milliseconds
+          examples: [145]
+
+    ChatMessageRead:
+      type: object
+      required:
+        - id
+        - session_id
+        - role
+        - content
+        - citations
+        - suggested_queries
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+        found:
+          type: ["boolean", "null"]
+        citations:
+          type: array
+          items:
+            $ref: "#/components/schemas/CitationItem"
+        suggested_queries:
+          type: array
+          items:
+            type: string
+        latency_ms:
+          type: ["integer", "null"]
+        created_at:
+          type: string
+          format: date-time
+
+    ChatSessionSummary:
+      type: object
+      required:
+        - id
+        - user_id
+        - title
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        message_count:
+          type: integer
+          default: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ChatSessionDetail:
+      type: object
+      required:
+        - id
+        - user_id
+        - title
+        - messages
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessageRead"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - database
+        - pgvector
+        - llm_provider
+        - embedding_provider
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        database:
+          type: string
+          enum: [connected, disconnected]
+        pgvector:
+          type: string
+          enum: [enabled, unavailable]
+        llm_provider:
+          type: string
+          examples: ["mock", "openai", "gemini"]
+        embedding_provider:
+          type: string
+          examples: ["mock", "openai", "gemini"]
+        timestamp:
+          type: string
+          format: date-time
+
+paths:
+  /api/v1/health:
+    get:
+      tags: [Health]
+      summary: Health & readiness check for API, PostgreSQL, pgvector, and active providers
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate user and issue JWT access token
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Successfully authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "401":
+          description: Invalid email/username or password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current authenticated user profile, role, and department
+      operationId: getCurrentUser
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserRead"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/users:
+    get:
+      tags: [Users]
+      summary: List all users (Admin & Manager)
+      operationId: listUsers
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of registered users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserRead"
+        "403":
+          description: Insufficient role permissions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [Users]
+      summary: Create a new user account with role and department (Admin only)
+      operationId: createUser
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserCreateRequest"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserRead"
+        "403":
+          description: Admin privileges required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email or username already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/users/{user_id}/permissions:
+    patch:
+      tags: [Users]
+      summary: Update a user's RBAC role, department, or active status (Admin only)
+      operationId: updateUserPermissions
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserPermissionUpdateRequest"
+      responses:
+        "200":
+          description: Updated user record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserRead"
+        "403":
+          description: Admin privileges required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/documents/upload:
+    post:
+      tags: [Documents]
+      summary: Upload and ingest a document (PDF, DOCX, XLSX, TXT, MD) with RBAC & Department ACL metadata
+      operationId: uploadDocument
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+                - department
+                - access_level
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Document file (.pdf, .docx, .xlsx, .txt, .md) up to 50MB
+                title:
+                  type: string
+                  description: Optional display title (defaults to file_name)
+                department:
+                  $ref: "#/components/schemas/DepartmentCode"
+                access_level:
+                  $ref: "#/components/schemas/AccessLevel"
+                allowed_roles:
+                  type: string
+                  description: Comma-separated or JSON array of allowed roles (e.g. `admin,manager,employee` or `["admin","manager"]`)
+                  default: "admin,manager,employee"
+                permissions_json:
+                  type: string
+                  description: Optional JSON array of `DocumentPermissionEntry` objects for fine-grained `restricted` ACL grants
+      responses:
+        "201":
+          description: Document uploaded and ingested
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRead"
+        "400":
+          description: Unsupported file format or invalid ACL parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Only admin or manager can upload documents
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: File exceeds 50MB limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/documents:
+    get:
+      tags: [Documents]
+      summary: List documents accessible to the current user under Pre-Retrieval RBAC rules
+      operationId: listDocuments
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: department
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/DepartmentCode"
+        - name: access_level
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/AccessLevel"
+      responses:
+        "200":
+          description: List of authorized documents (unauthorized documents are never included)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DocumentRead"
+
+  /api/v1/documents/{doc_id}:
+    delete:
+      tags: [Documents]
+      summary: Delete a document and its indexed chunks (Admin or owning Department Manager)
+      operationId: deleteDocument
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: doc_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Document deleted confirmation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, document_id]
+                properties:
+                  deleted:
+                    type: boolean
+                  document_id:
+                    type: string
+                    format: uuid
+        "403":
+          description: Insufficient permissions to delete document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/documents/{doc_id}/acl:
+    patch:
+      tags: [Documents]
+      summary: Update a document's department, access_level, allowed_roles, and explicit permissions
+      operationId: updateDocumentACL
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: doc_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocumentACLUpdateRequest"
+      responses:
+        "200":
+          description: Document ACL updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentRead"
+        "403":
+          description: Insufficient permissions to modify ACL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/chat/query:
+    post:
+      tags: [Chat]
+      summary: Execute a RBAC-filtered, citation-verified RAG query
+      description: |
+        Executes the 3-stage enterprise RAG pipeline:
+        1. **Pre-Retrieval RBAC & Department ABAC SQL Filter** (Scenario 3): Filters chunks in PostgreSQL/pgvector by `user.id`, `user.role`, and `user.department` prior to vector ranking.
+        2. **Pre-Generation Similarity Threshold Gate** (Scenario 1): If no authorized chunks meet `similarity >= 0.65`, returns `found: false`, standard abstention message, `citations: []`, and 2–3 `suggested_queries`.
+        3. **Post-Generation Citation Verifier** (Scenario 2): Validates every cited `chunk_id` against the retrieved authorized pool, verifies quote grounding against `chunk.content`, and populates `file_name` and `page_or_sheet` from the database record.
+      operationId: queryKnowledgeBase
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatQueryRequest"
+      responses:
+        "200":
+          description: Grounded RAG response or deterministic abstention response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatQueryResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/chat/sessions:
+    get:
+      tags: [Chat]
+      summary: List chat sessions belonging to the current user
+      operationId: listChatSessions
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of user's chat sessions ordered by most recent activity
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChatSessionSummary"
+
+  /api/v1/chat/sessions/{session_id}:
+    get:
+      tags: [Chat]
+      summary: Get full message history and citations for a specific chat session
+      operationId: getChatSessionDetail
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Chat session details with messages and verified citations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatSessionDetail"
+        "404":
+          description: Session not found or does not belong to current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
