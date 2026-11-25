@@ -1116,6 +1116,52 @@ code {
   color: #78350f;
 }
 
+/* Scenario 1 tier 2: related documents suggestion */
+.related-docs-box {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  border-left-color: #3b82f6;
+}
+
+.related-docs-text {
+  white-space: pre-line;
+  font-size: 0.9rem;
+  color: #1e3a8a;
+  line-height: 1.55;
+}
+
+.related-docs-list {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.related-doc-card {
+  background: #ffffff;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.8rem;
+}
+
+.related-doc-title {
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: #1e40af;
+}
+
+.related-doc-meta {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  margin-top: 0.15rem;
+}
+
+.related-doc-excerpt {
+  font-size: 0.8rem;
+  color: #334155;
+  margin-top: 0.35rem;
+  font-style: italic;
+}
+
 .suggested-queries-section {
   margin-top: 0.9rem;
   padding-top: 0.75rem;

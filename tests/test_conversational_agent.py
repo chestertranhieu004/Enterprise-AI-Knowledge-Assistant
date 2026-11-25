@@ -510,3 +510,559 @@ def test_retriever_uses_calibrated_default_threshold_for_neural_providers() -> N
         similarity_threshold=0.72,
     )
     assert explicit_override.similarity_threshold == 0.72
+
+
+# ============================================================================
+# 6. Gemini Vertex AI Express Mode (AQ.) & Google AI Studio (AIza...) Tests
+# ============================================================================
+
+
+class _MockHTTPResponse:
+    """Context-manager mock for urllib.request.urlopen responses."""
+
+    def __init__(self, body_dict: dict[str, object]) -> None:
+        import json
+
+        self._raw = json.dumps(body_dict).encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._raw
+
+    def __enter__(self) -> "_MockHTTPResponse":
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
+        return False
+
+
+def _get_header_case_insensitive(req: object, header_name: str) -> str | None:
+    headers = getattr(req, "headers", {}) or {}
+    for k, v in headers.items():
+        if str(k).lower() == header_name.lower():
+            return str(v)
+    return None
+
+
+def test_gemini_llm_vertex_express_mode_endpoint_and_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    user_contexts: dict[str, UserContext],
+) -> None:
+    """
+    GeminiLLMProvider with an `AQ.` Vertex Express Mode key sends POST to
+    `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent`
+    with `x-goog-api-key` header, parses conversational & grounded RAG JSON responses cleanly,
+    and never leaks the API key on HTTPError.
+    """
+    import io
+    import json
+    import urllib.error
+    import urllib.request
+    import uuid
+
+    from app.rag.providers.base import RetrievedChunk
+    from app.rag.providers.gemini_provider import GeminiLLMProvider
+
+    test_key = "AQ.test_key_vertex_llm_secret"
+    chunk_id = uuid.uuid4()
+    doc_id = uuid.uuid4()
+    captured_requests: list[tuple[str, str | None, dict[str, object]]] = []
+
+    def _fake_urlopen(req: urllib.request.Request, timeout: int = 45) -> _MockHTTPResponse:
+        url = req.full_url
+        api_key_hdr = _get_header_case_insensitive(req, "x-goog-api-key")
+        body = json.loads((req.data or b"{}").decode("utf-8"))
+        captured_requests.append((url, api_key_hdr, body))
+
+        if len(captured_requests) == 1:
+            # Turn 1: Conversational reply JSON
+            conv_json = json.dumps(
+                {
+                    "answer": "Xin chào Phạm Kỹ Thuật! Mình sẵn sàng hỗ trợ bạn hôm nay.",
+                    "suggested_queries": [
+                        "Chính sách nghỉ phép năm của công ty là gì?",
+                        "Quy định làm việc hybrid như thế nào?",
+                    ],
+                }
+            )
+            return _MockHTTPResponse(
+                {"candidates": [{"content": {"parts": [{"text": conv_json}]}}]}
+            )
+
+        # Turn 2: Grounded RAG JSON
+        rag_json = json.dumps(
+            {
+                "answer": f"Nhân viên chính thức được nghỉ 12 ngày phép năm [{chunk_id}].",
+                "abstained": False,
+                "citations": [
+                    {
+                        "chunk_id": str(chunk_id),
+                        "quote": "Nhân viên chính thức được nghỉ phép 12 ngày phép hưởng nguyên lương.",
+                    }
+                ],
+                "suggested_queries": [
+                    "Quy định phép thâm niên như thế nào?",
+                    "Cần đăng ký nghỉ phép trước bao nhiêu ngày?",
+                ],
+            }
+        )
+        return _MockHTTPResponse(
+            {"candidates": [{"content": {"parts": [{"text": rag_json}]}}]}
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+    provider = GeminiLLMProvider(api_key=test_key, model_name="models/gemini-2.5-flash")
+    assert provider.is_vertex_express is True
+
+    # 1. Conversational reply
+    conv_res = provider.generate_conversational_reply(
+        query="Xin chào",
+        user=user_contexts["eng.employee"],
+        intent="greeting",
+    )
+    assert conv_res.abstained is False
+    assert "Phạm Kỹ Thuật" in conv_res.answer
+    assert conv_res.citations == []
+    assert len(conv_res.suggested_queries) == 2
+
+    # 2. Grounded RAG answer
+    sample_chunk = RetrievedChunk(
+        chunk_id=chunk_id,
+        document_id=doc_id,
+        file_name="Chinh_sach_nghi_phep_2026.pdf",
+        title="Chính sách Nghỉ phép 2026",
+        department="General",
+        access_level="public",
+        page_or_sheet="Page 1",
+        chunk_index=0,
+        content="Nhân viên chính thức được nghỉ phép 12 ngày phép hưởng nguyên lương.",
+        score=0.89,
+    )
+    rag_res = provider.generate_grounded_answer(
+        query="Chính sách nghỉ phép năm của công ty như thế nào?",
+        chunks=[sample_chunk],
+    )
+    assert rag_res.abstained is False
+    assert str(chunk_id) in rag_res.answer
+    assert len(rag_res.citations) == 1
+    assert str(rag_res.citations[0].chunk_id) == str(chunk_id)
+
+    expected_url = (
+        "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent"
+    )
+    assert len(captured_requests) == 2
+    for url, hdr_key, req_payload in captured_requests:
+        assert url == expected_url
+        assert "key=" not in url
+        assert hdr_key == test_key
+        assert req_payload["generationConfig"]["responseMimeType"] == "application/json"  # type: ignore[index]
+
+    # 3. Verify HTTPError logs status/snippet cleanly with ZERO API key leakage and raises AIProviderError
+    from app.rag.providers.base import AIProviderError
+
+    def _failing_urlopen(req: urllib.request.Request, timeout: int = 45) -> _MockHTTPResponse:
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=403,
+            msg="Forbidden",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=io.BytesIO(
+                b'{"error":{"message":"Vertex AI API has not been used in project 123 before or it is disabled."}}'
+            ),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _failing_urlopen)
+    with caplog.at_level("ERROR"):
+        with pytest.raises(AIProviderError) as exc_info:
+            provider.generate_grounded_answer(
+                query="Chính sách nghỉ phép?",
+                chunks=[sample_chunk],
+            )
+    err = exc_info.value
+    assert err.status_code == 403
+    user_msg = err.to_user_message()
+    assert "Không kết nối được dịch vụ AI" in user_msg
+    assert "Vertex AI" in user_msg
+    assert test_key not in user_msg
+    assert test_key not in str(err)
+    assert test_key not in caplog.text
+    assert "403" in caplog.text
+
+
+def test_gemini_embedding_vertex_express_mode_predict_and_regional_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    GeminiEmbeddingProvider with an `AQ.` Vertex Express Mode key POSTs to
+    `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-embedding-001:predict`
+    with `instances` + `outputDimensionality: 768`, parses `predictions[*].embeddings.values`,
+    returns L2-normalized 768-dim vectors, and falls back to `us-central1` on HTTP 404.
+    """
+    import io
+    import json
+    import math
+    import urllib.error
+    import urllib.request
+
+    from app.rag.providers.gemini_provider import GeminiEmbeddingProvider
+
+    test_key = "AQ.test_key_vertex_embed_secret"
+    captured_requests: list[tuple[str, str | None, dict[str, object]]] = []
+
+    raw_vec_a = [0.0] * 768
+    raw_vec_a[0] = 3.0
+    raw_vec_a[1] = 4.0
+    raw_vec_b = [0.0] * 768
+    raw_vec_b[2] = 5.0
+    raw_vec_b[3] = 12.0
+
+    def _fake_predict_urlopen(req: urllib.request.Request, timeout: int = 30) -> _MockHTTPResponse:
+        url = req.full_url
+        hdr_key = _get_header_case_insensitive(req, "x-goog-api-key")
+        body = json.loads((req.data or b"{}").decode("utf-8"))
+        captured_requests.append((url, hdr_key, body))
+        instances = body.get("instances") or []
+        preds = [
+            {"embeddings": {"values": raw_vec_a if i == 0 else raw_vec_b}}
+            for i in range(len(instances))
+        ]
+        return _MockHTTPResponse({"predictions": preds})
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_predict_urlopen)
+
+    emb_provider = GeminiEmbeddingProvider(
+        api_key=test_key,
+        model_name="models/gemini-embedding-001",
+        dimension=768,
+    )
+    assert emb_provider.is_vertex_express is True
+
+    vectors = emb_provider.embed_texts(["Chính sách nghỉ phép", "Quy trình thanh toán"])
+    assert len(vectors) == 2
+    for vec in vectors:
+        assert len(vec) == 768
+        l2 = math.sqrt(sum(v * v for v in vec))
+        assert abs(l2 - 1.0) < 1e-4
+    assert abs(vectors[0][0] - 0.6) < 1e-4
+    assert abs(vectors[0][1] - 0.8) < 1e-4
+
+    assert len(captured_requests) == 1
+    req_url, req_key, req_body = captured_requests[0]
+    assert req_url == (
+        "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-embedding-001:predict"
+    )
+    assert "key=" not in req_url
+    assert req_key == test_key
+    assert req_body["instances"] == [
+        {"content": "Chính sách nghỉ phép"},
+        {"content": "Quy trình thanh toán"},
+    ]
+    assert req_body["parameters"] == {"outputDimensionality": 768, "autoTruncate": True}
+
+    # Verify regional us-central1 fallback when global endpoint returns HTTP 404
+    fallback_urls: list[str] = []
+
+    def _fallback_urlopen(req: urllib.request.Request, timeout: int = 30) -> _MockHTTPResponse:
+        fallback_urls.append(req.full_url)
+        if req.full_url.startswith("https://aiplatform.googleapis.com/"):
+            raise urllib.error.HTTPError(
+                url=req.full_url,
+                code=404,
+                msg="Not Found",
+                hdrs=None,  # type: ignore[arg-type]
+                fp=io.BytesIO(b'{"error":"global endpoint not found"}'),
+            )
+        return _MockHTTPResponse({"predictions": [{"embeddings": {"values": raw_vec_a}}]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fallback_urlopen)
+    q_vec = emb_provider.embed_query("Chính sách nghỉ phép")
+    assert len(q_vec) == 768
+    assert fallback_urls == [
+        "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-embedding-001:predict",
+        "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/gemini-embedding-001:predict",
+    ]
+
+
+def test_gemini_standard_ai_studio_keys_preserve_generativelanguage_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Standard Google AI Studio (`AIza...`) keys continue calling
+    `https://generativelanguage.googleapis.com/v1beta/models/...` with `x-goog-api-key` header.
+    """
+    import json
+    import math
+    import urllib.request
+
+    from app.rag.providers.gemini_provider import (
+        GeminiEmbeddingProvider,
+        GeminiLLMProvider,
+    )
+
+    studio_key = "AIzaSyTestKeyStudio123456"
+    seen_calls: list[tuple[str, str | None, dict[str, object]]] = []
+
+    def _studio_urlopen(req: urllib.request.Request, timeout: int = 45) -> _MockHTTPResponse:
+        url = req.full_url
+        hdr_key = _get_header_case_insensitive(req, "x-goog-api-key")
+        body = json.loads((req.data or b"{}").decode("utf-8"))
+        seen_calls.append((url, hdr_key, body))
+        if url.endswith(":embedContent"):
+            vec = [0.0] * 768
+            vec[5] = 2.0
+            return _MockHTTPResponse({"embedding": {"values": vec}})
+        reply_json = json.dumps(
+            {
+                "answer": "Xin chào từ Google AI Studio!",
+                "suggested_queries": ["Câu hỏi 1?", "Câu hỏi 2?"],
+            }
+        )
+        return _MockHTTPResponse(
+            {"candidates": [{"content": {"parts": [{"text": reply_json}]}}]}
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _studio_urlopen)
+
+    llm = GeminiLLMProvider(api_key=studio_key, model_name="gemini-2.0-flash")
+    emb = GeminiEmbeddingProvider(
+        api_key=studio_key, model_name="models/text-embedding-004", dimension=768
+    )
+    assert llm.is_vertex_express is False
+    assert emb.is_vertex_express is False
+
+    conv_reply = llm.generate_conversational_reply(query="Xin chào", intent="greeting")
+    assert conv_reply.abstained is False
+    assert "Google AI Studio" in conv_reply.answer
+
+    vec = emb.embed_query("Chính sách nghỉ phép")
+    assert len(vec) == 768
+    assert abs(math.sqrt(sum(v * v for v in vec)) - 1.0) < 1e-4
+
+    assert seen_calls[0][0] == (
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    )
+    assert seen_calls[0][1] == studio_key
+    assert "key=" not in seen_calls[0][0]
+
+    assert seen_calls[1][0] == (
+        "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
+    )
+    assert seen_calls[1][1] == studio_key
+    assert seen_calls[1][2]["outputDimensionality"] == 768
+
+
+# ============================================================================
+# 7. Graceful AI Provider Failure Handling (HTTP 503 + Zero Key Leakage)
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    ("http_status", "error_body", "expected_snippet"),
+    [
+        (
+            403,
+            b'{"error":{"message":"Vertex AI API has not been used in project 999 before or it is disabled."}}',
+            "Vertex AI",
+        ),
+        (
+            429,
+            b'{"error":{"message":"Resource has been exhausted (e.g. check quota)."}}',
+            "429",
+        ),
+    ],
+)
+def test_chat_query_returns_503_when_gemini_embedding_returns_403_or_429(
+    client: TestClient,
+    db_session: Session,
+    auth_headers: dict[str, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    http_status: int,
+    error_body: bytes,
+    expected_snippet: str,
+) -> None:
+    """
+    When Gemini embedding fails with HTTP 403 (Vertex AI API disabled) or 429 (quota exceeded),
+    POST /api/v1/chat/query must return HTTP 503 with error_code == 'AI_PROVIDER_UNAVAILABLE',
+    a clear Vietnamese diagnostic message containing zero API key leakage, and roll back DB
+    without persisting misleading chat messages.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    from app.core.config import settings
+    from app.db.models import ChatMessage
+
+    secret_key = "AQ.secret_embed_key_never_leak_503"
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "gemini")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", secret_key)
+
+    def _failing_embed_urlopen(req: urllib.request.Request, timeout: int = 30) -> _MockHTTPResponse:
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=http_status,
+            msg="Error",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=io.BytesIO(error_body),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _failing_embed_urlopen)
+
+    before_msg_count = len(db_session.scalars(select(ChatMessage)).all())
+
+    with caplog.at_level("ERROR"):
+        resp = client.post(
+            "/api/v1/chat/query",
+            headers=auth_headers["eng.employee"],
+            json={"query": "Chính sách nghỉ phép của công ty như thế nào?", "top_k": 5},
+        )
+
+    assert resp.status_code == 503, f"Expected HTTP 503, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["error_code"] == "AI_PROVIDER_UNAVAILABLE"
+    assert isinstance(body["detail"], str) and len(body["detail"]) >= 20
+    assert body["detail"] != ABSTENTION_MESSAGE_VI
+    assert "Không kết nối được dịch vụ AI" in body["detail"]
+    assert expected_snippet in body["detail"]
+    assert secret_key not in resp.text
+    assert secret_key not in caplog.text
+
+    after_msg_count = len(db_session.scalars(select(ChatMessage)).all())
+    assert after_msg_count == before_msg_count, (
+        "DB transaction must roll back on HTTP 503 without persisting misleading messages"
+    )
+
+
+@pytest.mark.parametrize(
+    ("http_status", "error_body", "expected_snippet"),
+    [
+        (
+            403,
+            b'{"error":{"message":"Vertex AI API has not been used in project 999 before or it is disabled."}}',
+            "Vertex AI",
+        ),
+        (
+            429,
+            b'{"error":{"message":"Quota exceeded for aiplatform.googleapis.com"}}',
+            "429",
+        ),
+    ],
+)
+def test_chat_query_returns_503_when_gemini_generation_returns_403_or_429(
+    client: TestClient,
+    db_session: Session,
+    auth_headers: dict[str, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    http_status: int,
+    error_body: bytes,
+    expected_snippet: str,
+) -> None:
+    """
+    When retrieval succeeds with authorized chunks (mock embeddings) but Gemini LLM generation
+    fails with HTTP 403 or 429, POST /api/v1/chat/query must return HTTP 503 with
+    error_code == 'AI_PROVIDER_UNAVAILABLE', a Vietnamese diagnostic detail, zero API key leakage,
+    and DB rollback.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    from app.core.config import settings
+    from app.db.models import ChatMessage
+
+    secret_key = "AQ.secret_gen_key_never_leak_503"
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "mock")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", secret_key)
+
+    def _failing_gen_urlopen(req: urllib.request.Request, timeout: int = 45) -> _MockHTTPResponse:
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=http_status,
+            msg="Error",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=io.BytesIO(error_body),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _failing_gen_urlopen)
+
+    before_msg_count = len(db_session.scalars(select(ChatMessage)).all())
+
+    with caplog.at_level("ERROR"):
+        resp = client.post(
+            "/api/v1/chat/query",
+            headers=auth_headers["eng.employee"],
+            json={"query": "Chính sách nghỉ phép của công ty như thế nào?", "top_k": 5},
+        )
+
+    assert resp.status_code == 503, f"Expected HTTP 503, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["error_code"] == "AI_PROVIDER_UNAVAILABLE"
+    assert isinstance(body["detail"], str) and len(body["detail"]) >= 20
+    assert body["detail"] != ABSTENTION_MESSAGE_VI
+    assert "Không kết nối được dịch vụ AI" in body["detail"]
+    assert expected_snippet in body["detail"]
+    assert secret_key not in resp.text
+    assert secret_key not in caplog.text
+
+    after_msg_count = len(db_session.scalars(select(ChatMessage)).all())
+    assert after_msg_count == before_msg_count
+
+
+@pytest.mark.parametrize("http_status", [403, 429])
+def test_chat_query_greeting_still_returns_200_when_gemini_returns_403_or_429(
+    client: TestClient,
+    auth_headers: dict[str, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    http_status: int,
+) -> None:
+    """
+    A conversational greeting ('Xin chào') must STILL return HTTP 200 (found=True, citations=[])
+    via safe Mock conversational fallback even when Gemini returns HTTP 403 or 429,
+    with zero API key leakage.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    from app.core.config import settings
+
+    secret_key = "AQ.secret_greeting_key_never_leak"
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "gemini")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", secret_key)
+
+    def _failing_urlopen(req: urllib.request.Request, timeout: int = 45) -> _MockHTTPResponse:
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=http_status,
+            msg="Error",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=io.BytesIO(b'{"error":{"message":"Provider unavailable"}}'),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _failing_urlopen)
+
+    with caplog.at_level("WARNING"):
+        resp = client.post(
+            "/api/v1/chat/query",
+            headers=auth_headers["eng.employee"],
+            json={"query": "Xin chào", "top_k": 5},
+        )
+
+    assert resp.status_code == 200, f"Expected HTTP 200 for greeting, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["found"] is True
+    assert body["citations"] == []
+    assert body["answer"] != ABSTENTION_MESSAGE_VI
+    assert len(body["answer"].strip()) >= 20
+    assert 2 <= len(body["suggested_queries"]) <= 3
+    assert secret_key not in resp.text
+    assert secret_key not in caplog.text
+
+

@@ -164,6 +164,8 @@ export const ChatPage: React.FC = () => {
         suggested_queries: response.suggested_queries || [],
         latency_ms: response.latency_ms,
         created_at: new Date().toISOString(),
+        match_level: response.match_level,
+        related_documents: response.related_documents || [],
       };
 
       setActiveSessionId(response.session_id);
@@ -432,8 +434,19 @@ export const ChatPage: React.FC = () => {
             messages.map((msg) => {
               const isUser = msg.role === 'user';
               const citationsList = msg.citations || [];
+              // Scenario 1 tier 2: no direct answer, but related authorized documents were suggested.
+              // History messages carry no match_level, so detect by content (anything other than the exact abstention).
+              const isRelatedSuggestion =
+                !isUser &&
+                msg.found === false &&
+                (msg.match_level === 'related' ||
+                  (msg.match_level === undefined &&
+                    msg.content.trim() !== '' &&
+                    msg.content.trim() !== ABSTENTION_MESSAGE_VI));
+              const relatedDocs = msg.related_documents || [];
               const isAbstention =
                 !isUser &&
+                !isRelatedSuggestion &&
                 (msg.found === false ||
                   msg.content.trim() === ABSTENTION_MESSAGE_VI);
               const isGroundedWithCitations =
@@ -491,6 +504,14 @@ export const ChatPage: React.FC = () => {
                             💬 Trợ lý AI
                           </span>
                         )}
+                        {isRelatedSuggestion && (
+                          <span
+                            className="status-pill status-pill-abstention"
+                            data-testid="scenario1-related-pill"
+                          >
+                            🧭 Scenario 1: Gợi ý tài liệu liên quan (found: false)
+                          </span>
+                        )}
                         {!isUser && isAbstention && (
                           <span
                             className="status-pill status-pill-abstention"
@@ -511,7 +532,65 @@ export const ChatPage: React.FC = () => {
                     </div>
 
                     {/* SCENARIO 1 UI: When found === false, render clear abstention alert, ZERO fabricated citations, and clickable suggested_queries */}
-                    {isAbstention ? (
+                    {isRelatedSuggestion ? (
+                      <div
+                        className="abstention-alert-box related-docs-box"
+                        role="status"
+                        data-testid="scenario1-related-alert"
+                      >
+                        <div className="related-docs-text">{msg.content}</div>
+
+                        {relatedDocs.length > 0 && (
+                          <div className="related-docs-list">
+                            {relatedDocs.map((doc) => (
+                              <div
+                                key={`${doc.document_id}-${doc.page_or_sheet}`}
+                                className="related-doc-card"
+                              >
+                                <div className="related-doc-title">
+                                  📄 {doc.title}
+                                </div>
+                                <div className="related-doc-meta">
+                                  {doc.file_name} · {doc.page_or_sheet} · độ
+                                  tương đồng {doc.score.toFixed(2)}
+                                </div>
+                                {doc.excerpt && (
+                                  <div className="related-doc-excerpt">
+                                    “{doc.excerpt}”
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {msg.suggested_queries &&
+                          msg.suggested_queries.length > 0 && (
+                            <div
+                              className="suggested-queries-section"
+                              data-testid="suggested-queries-container"
+                            >
+                              <div className="suggested-queries-title">
+                                💡 Gợi ý cách đặt lại câu hỏi (Nhấn để hỏi lại
+                                ngay):
+                              </div>
+                              <div className="suggested-queries-chips">
+                                {msg.suggested_queries.map((suggestion, sIdx) => (
+                                  <button
+                                    key={sIdx}
+                                    type="button"
+                                    className="suggested-query-chip"
+                                    disabled={isSendingQuery}
+                                    onClick={() => void executeQuery(suggestion)}
+                                  >
+                                    ↗ {suggestion}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                      </div>
+                    ) : isAbstention ? (
                       <div
                         className="abstention-alert-box"
                         role="status"
@@ -526,7 +605,7 @@ export const ChatPage: React.FC = () => {
                           chặn sinh câu trả lời tự suy diễn vì không có đoạn tài
                           liệu nào thuộc phạm vi quyền truy cập của bạn (
                           <code>{user?.role}</code> / <code>{user?.department}</code>
-                          ) đạt ngưỡng tương đồng <code>&ge; 0.65</code>. Không có
+                          ) đủ liên quan đến câu hỏi. Không có
                           nguồn trích dẫn giả mạo nào được tạo (
                           <code>citations: []</code>).
                         </p>

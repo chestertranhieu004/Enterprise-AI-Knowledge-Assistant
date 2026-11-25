@@ -1,10 +1,12 @@
 # File: backend/app/rag/providers/__init__.py
 from app.rag.providers.base import (
+    AIProviderError,
     BaseEmbeddingProvider,
     BaseLLMProvider,
     RawCitationCandidate,
     RawLLMGeneration,
     RetrievedChunk,
+    build_ai_provider_error,
     cosine_similarity,
     l2_normalize,
 )
@@ -14,6 +16,7 @@ from app.rag.providers.mock_provider import MockEmbeddingProvider, MockLLMProvid
 from app.rag.providers.openai_provider import OpenAIEmbeddingProvider, OpenAILLMProvider
 
 __all__ = [
+    "AIProviderError",
     "BaseEmbeddingProvider",
     "BaseLLMProvider",
     "GeminiEmbeddingProvider",
@@ -25,6 +28,7 @@ __all__ = [
     "RawCitationCandidate",
     "RawLLMGeneration",
     "RetrievedChunk",
+    "build_ai_provider_error",
     "cosine_similarity",
     "get_embedding_provider",
     "get_llm_provider",

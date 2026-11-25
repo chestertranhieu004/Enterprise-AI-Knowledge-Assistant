@@ -1,6 +1,8 @@
 # File: backend/app/rag/providers/openai_provider.py
 import json
 import logging
+import socket
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -14,11 +16,13 @@ from app.rag.prompts import (
     sanitize_user_query,
 )
 from app.rag.providers.base import (
+    AIProviderError,
     BaseEmbeddingProvider,
     BaseLLMProvider,
     RawCitationCandidate,
     RawLLMGeneration,
     RetrievedChunk,
+    build_ai_provider_error,
     l2_normalize,
 )
 from app.rag.providers.mock_provider import MockLLMProvider
@@ -50,49 +54,89 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
 
     def _call_embeddings_api(self, inputs: list[str]) -> list[list[float]]:
         if not self.api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY is not configured for OpenAIEmbeddingProvider."
+            raise AIProviderError(
+                provider="openai",
+                status_code=None,
+                reason="Chưa cấu hình OPENAI_API_KEY trong .env.",
             )
 
         cleaned_inputs = [text.strip() or " " for text in inputs]
         try:
             from openai import OpenAI  # type: ignore[import-not-found]
-
-            client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-            response = client.embeddings.create(
-                model=self.model_name,
-                input=cleaned_inputs,
-                dimensions=self.dimension,
-            )
-            ordered = sorted(response.data, key=lambda item: item.index)
-            return [
-                l2_normalize(list(item.embedding), target_dim=self.dimension)
-                for item in ordered
-            ]
         except ImportError:
-            payload = json.dumps(
-                {
-                    "model": self.model_name,
-                    "input": cleaned_inputs,
-                    "dimensions": self.dimension,
-                }
-            ).encode("utf-8")
-            req = urllib.request.Request(
-                f"{self.base_url}/embeddings",
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.api_key}",
-                },
-                method="POST",
-            )
+            OpenAI = None
+
+        if OpenAI is not None:
+            try:
+                client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+                response = client.embeddings.create(
+                    model=self.model_name,
+                    input=cleaned_inputs,
+                    dimensions=self.dimension,
+                )
+                ordered = sorted(response.data, key=lambda item: item.index)
+                return [
+                    l2_normalize(list(item.embedding), target_dim=self.dimension)
+                    for item in ordered
+                ]
+            except Exception as exc:
+                status_code = getattr(exc, "status_code", None)
+                logger.error(
+                    "OpenAI embeddings API error (status=%s): %s",
+                    status_code,
+                    type(exc).__name__,
+                )
+                raise build_ai_provider_error(
+                    provider="openai",
+                    status_code=int(status_code) if isinstance(status_code, int) else None,
+                    body_snippet=str(exc)[:300],
+                ) from exc
+
+        payload = json.dumps(
+            {
+                "model": self.model_name,
+                "input": cleaned_inputs,
+                "dimensions": self.dimension,
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}/embeddings",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
-            data_items = sorted(body.get("data", []), key=lambda x: x.get("index", 0))
-            return [
-                l2_normalize(list(item["embedding"]), target_dim=self.dimension)
-                for item in data_items
-            ]
+        except urllib.error.HTTPError as exc:
+            body_snippet = exc.read().decode("utf-8", errors="replace").strip()[:500]
+            logger.error(
+                "OpenAI embeddings HTTP %s error at %s/embeddings: %s",
+                exc.code,
+                self.base_url,
+                body_snippet or exc.reason,
+            )
+            raise build_ai_provider_error(
+                provider="openai",
+                status_code=exc.code,
+                body_snippet=body_snippet,
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            logger.error("OpenAI embeddings network/timeout error: %s", exc)
+            raise build_ai_provider_error(
+                provider="openai",
+                status_code=None,
+                body_snippet=str(exc),
+            ) from exc
+
+        data_items = sorted(body.get("data", []), key=lambda x: x.get("index", 0))
+        return [
+            l2_normalize(list(item["embedding"]), target_dim=self.dimension)
+            for item in data_items
+        ]
 
     def embed_query(self, text: str) -> list[float]:
         """Returns a 768-dimensional L2-normalized float vector for a query string."""
@@ -133,7 +177,11 @@ class OpenAILLMProvider(BaseLLMProvider):
         temperature: float = 0.0,
     ) -> str:
         if not self.api_key:
-            raise RuntimeError("OPENAI_API_KEY is not configured for OpenAILLMProvider.")
+            raise AIProviderError(
+                provider="openai",
+                status_code=None,
+                reason="Chưa cấu hình OPENAI_API_KEY trong .env.",
+            )
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -142,38 +190,76 @@ class OpenAILLMProvider(BaseLLMProvider):
 
         try:
             from openai import OpenAI  # type: ignore[import-not-found]
-
-            client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-            kwargs: dict[str, Any] = {
-                "model": self.model_name,
-                "messages": messages,
-                "temperature": temperature,
-            }
-            if json_object_mode:
-                kwargs["response_format"] = {"type": "json_object"}
-            response = client.chat.completions.create(**kwargs)
-            return response.choices[0].message.content or "{}"
         except ImportError:
-            req_body: dict[str, Any] = {
-                "model": self.model_name,
-                "messages": messages,
-                "temperature": temperature,
-            }
-            if json_object_mode:
-                req_body["response_format"] = {"type": "json_object"}
-            payload = json.dumps(req_body).encode("utf-8")
-            req = urllib.request.Request(
-                f"{self.base_url}/chat/completions",
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.api_key}",
-                },
-                method="POST",
-            )
+            OpenAI = None
+
+        if OpenAI is not None:
+            try:
+                client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+                kwargs: dict[str, Any] = {
+                    "model": self.model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                }
+                if json_object_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+                response = client.chat.completions.create(**kwargs)
+                return response.choices[0].message.content or "{}"
+            except Exception as exc:
+                status_code = getattr(exc, "status_code", None)
+                logger.error(
+                    "OpenAI chat completion error (status=%s): %s",
+                    status_code,
+                    type(exc).__name__,
+                )
+                raise build_ai_provider_error(
+                    provider="openai",
+                    status_code=int(status_code) if isinstance(status_code, int) else None,
+                    body_snippet=str(exc)[:300],
+                ) from exc
+
+        req_body: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if json_object_mode:
+            req_body["response_format"] = {"type": "json_object"}
+        payload = json.dumps(req_body).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        try:
             with urllib.request.urlopen(req, timeout=45) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
-            return body["choices"][0]["message"]["content"] or "{}"
+        except urllib.error.HTTPError as exc:
+            body_snippet = exc.read().decode("utf-8", errors="replace").strip()[:500]
+            logger.error(
+                "OpenAI chat HTTP %s error at %s/chat/completions: %s",
+                exc.code,
+                self.base_url,
+                body_snippet or exc.reason,
+            )
+            raise build_ai_provider_error(
+                provider="openai",
+                status_code=exc.code,
+                body_snippet=body_snippet,
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            logger.error("OpenAI chat network/timeout error: %s", exc)
+            raise build_ai_provider_error(
+                provider="openai",
+                status_code=None,
+                body_snippet=str(exc),
+            ) from exc
+
+        return body["choices"][0]["message"]["content"] or "{}"
 
     @staticmethod
     def _parse_generation_json(raw_text: str, query: str) -> RawLLMGeneration:

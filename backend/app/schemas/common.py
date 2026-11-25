@@ -8,6 +8,18 @@ ABSTENTION_MESSAGE_VI: str = (
     "Không tìm thấy thông tin phù hợp trong các tài liệu bạn có quyền truy cập."
 )
 
+# Scenario 1 (tier 2): query relates to the knowledge base but no document answers it directly
+RELATED_DOCUMENTS_INTRO_VI: str = (
+    "Tôi chưa tìm thấy đoạn tài liệu nào trả lời trực tiếp câu hỏi này, "
+    "nên sẽ không tự suy đoán câu trả lời."
+)
+RELATED_DOCUMENTS_LEAD_VI: str = (
+    "Nội dung bạn đang tìm kiếm có thể liên quan đến:"
+)
+RELATED_DOCUMENTS_OUTRO_VI: str = (
+    "Bạn có thể mở các tài liệu trên để xem chi tiết, hoặc đặt lại câu hỏi cụ thể hơn theo gợi ý bên dưới."
+)
+
 DEFAULT_SIMILARITY_THRESHOLD: float = 0.65
 DEFAULT_TOP_K: int = 5
 EMBEDDING_DIM: int = 768

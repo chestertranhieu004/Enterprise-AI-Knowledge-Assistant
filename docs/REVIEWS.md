@@ -278,3 +278,55 @@ Executed directly in `d:/enterprise-knowledge-assistant/frontend` with Node `v24
 
 ### 3. Sign-Off Decision
 **APPROVED.** All 3 Mandatory Scenarios (Scenario 1 abstention, Scenario 2 citation verification, Scenario 3 pre-retrieval SQL RBAC zero-leakage) remain 100% intact alongside the Natural Conversational AI Agent capabilities.
+
+---
+
+## Post-Release Verification — Google Cloud Vertex AI Express Mode (`AQ.`) Gemini Support
+
+- **Reviewed Authors**: `@rag_engineer`, `@qa_security`
+- **Review Date**: 2026-11-24
+- **Status**: **PASSED / APPROVED**
+
+### 1. Code & Security Audit (`backend/app/rag/providers/gemini_provider.py`)
+- **Zero Hardcoded / Logged Credentials**: Verified no API keys are hardcoded or logged anywhere. Authentication uses strictly the `x-goog-api-key` HTTP header (never URL query strings); `HTTPError` logging emits only HTTP status, URL (without key), and sanitized response body snippet, falling back safely to `ABSTENTION_MESSAGE_VI` in `generate_grounded_answer`.
+- **Automatic Vertex AI Express Mode (`AQ.`) Routing**:
+  - `GeminiLLMProvider`: Detects `api_key.startswith("AQ.")` (unless custom `base_url` is provided), strips leading `models/`, and POSTs to `https://aiplatform.googleapis.com/v1/publishers/google/models/{clean_model_id}:generateContent`.
+  - `GeminiEmbeddingProvider`: Detects `api_key.startswith("AQ.")`, POSTs batched `instances` + `parameters: {"outputDimensionality": 768, "autoTruncate": True}` to `https://aiplatform.googleapis.com/v1/publishers/google/models/{clean_model_id}:predict` with automatic `us-central1` regional fallback on HTTP 400/404, parsing `predictions[*].embeddings.values` into 768-dim L2-normalized vectors.
+- **Google AI Studio (`AIza...`) Compatibility**: Preserves `https://generativelanguage.googleapis.com/v1beta/models/{clean_model_id}:generateContent` and `:embedContent` with `x-goog-api-key` header and `outputDimensionality: 768`.
+
+### 2. Independent Verification Execution Output (Reviewer Re-Run)
+- **Full Pytest Suite**: **`75 passed in 30.57s`** (exit code `0`, 0 failed, 0 skipped — including all 3 new mocked `urllib.request.urlopen` tests in `tests/test_conversational_agent.py` verifying `AQ.` LLM, `AQ.` Embedding + `us-central1` fallback, and `AIza...` AI Studio backward compatibility).
+- **RAG Evaluation Benchmark (`python tests/eval_rag.py`)**: **`18/18 passed`** (`4294.23 ms`, exit code `0`):
+  - Scenario 1 Abstention Accuracy: **100.00%** (`4/4`)
+  - Scenario 2 Citation Precision & Verification Accuracy: **100.00%** (`6/6` citations, `6/6` queries)
+  - Scenario 3 RBAC Pre-Retrieval Zero-Leakage Rate: **100.00%** (`5/5`)
+  - Red-Team Prompt Injection Block Rate: **100.00%** (`3/3`)
+  - Overall Answer Groundedness: **100.00%** (`18/18`)
+
+### 3. Sign-Off Decision
+**APPROVED.** Vertex AI Express Mode (`AQ.`) and Google AI Studio (`AIza...`) Gemini support are verified cleanly with zero credential leakage and 100% test pass rate.
+
+---
+
+## Post-Release Verification — Graceful AI Provider Failure Hotfix (HTTP 503 vs 500)
+
+- **Reviewed Authors**: `@rag_engineer`, `@qa_security`
+- **Review Date**: 2026-11-25
+- **Status**: **PASSED / APPROVED**
+
+### 1. Code & Security Audit
+- **`backend/app/rag/providers/base.py`**: Added typed `AIProviderError(RuntimeError)` (`provider`, `status_code`, `reason`, `to_user_message()`) and `build_ai_provider_error(...)` mapping HTTP 403 (Vertex AI API disabled / permission denied), 400/401 (invalid API key), 429 (quota/rate limit), 5xx, and network/timeout errors to clear Vietnamese diagnostic messages with zero raw API key exposure.
+- **`backend/app/rag/providers/gemini_provider.py` & `openai_provider.py`**: Wrapped `urllib.error.HTTPError`, `URLError`, `TimeoutError`, `socket.timeout` (and OpenAI SDK errors) across both embedding and generation calls into `AIProviderError`. Confirmed zero API key leakage in logs or exception messages, preserved `us-central1` regional fallback on HTTP 400/404 for Vertex Express embeddings, and preserved safe Mock conversational fallback for greetings/small-talk (`generate_conversational_reply`).
+- **`backend/app/rag/service.py` (`RAGService.query`)**: Catches `AIProviderError` around retrieval embedding and grounded generation, executes `db.rollback()` so zero misleading chat messages are persisted, does **not** fall back to mock embeddings or fabricate document answers, and raises `AppException(detail=exc.to_user_message(), status_code=503, error_code="AI_PROVIDER_UNAVAILABLE")` handled cleanly by `app/core/exceptions.py` as **HTTP 503 Service Unavailable**.
+
+### 2. Independent Verification Execution Output (Reviewer Re-Run)
+- **Full Pytest Suite**: **`81 passed in 3.50s`** (exit code `0`, 0 failed, 0 skipped — including all 6 new 403/429 regression test cases in `tests/test_conversational_agent.py` verifying HTTP 503 + `AI_PROVIDER_UNAVAILABLE` + Vietnamese detail + DB rollback + zero API key leakage on embedding/generation failures, and HTTP 200 on `"Xin chào"` greetings).
+- **RAG Evaluation Benchmark (`python tests/eval_rag.py`)**: **`18/18 passed`** (`511.44 ms`, exit code `0`):
+  - Scenario 1 Abstention Accuracy: **100.00%** (`4/4`)
+  - Scenario 2 Citation Precision & Verification Accuracy: **100.00%** (`6/6` citations, `6/6` queries)
+  - Scenario 3 RBAC Pre-Retrieval Zero-Leakage Rate: **100.00%** (`5/5`)
+  - Red-Team Prompt Injection Block Rate: **100.00%** (`3/3`)
+  - Overall Answer Groundedness: **100.00%** (`18/18`)
+
+### 3. Sign-Off Decision
+**APPROVED.** External AI provider failures (403/429/network) now fail gracefully with HTTP 503 and sanitized Vietnamese diagnostics, zero API key leakage, zero mock-embedding mixing, and uninterrupted conversational greetings.

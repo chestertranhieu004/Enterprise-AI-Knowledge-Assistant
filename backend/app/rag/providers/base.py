@@ -37,6 +37,84 @@ def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     return float(max(-1.0, min(1.0, dot / (norm_a * norm_b))))
 
 
+class AIProviderError(RuntimeError):
+    """
+    Sanitized, typed exception raised when an external AI provider (Gemini / OpenAI)
+    fails due to HTTP errors (400/401/403/429/5xx), network errors, or timeouts.
+    NEVER includes raw API keys or secret credentials.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        reason: str,
+        status_code: int | None = None,
+    ) -> None:
+        self.provider = (provider or "AI").strip()
+        self.status_code = status_code
+        self.reason = (reason or "Dịch vụ AI tạm thời không khả dụng.").strip()
+        super().__init__(self.to_user_message())
+
+    @property
+    def provider_label(self) -> str:
+        low = self.provider.lower()
+        if low == "gemini":
+            return "Gemini"
+        if low == "openai":
+            return "OpenAI"
+        return self.provider
+
+    def to_user_message(self) -> str:
+        return f"Không kết nối được dịch vụ AI ({self.provider_label}): {self.reason}"
+
+
+def build_ai_provider_error(
+    provider: str,
+    status_code: int | None = None,
+    body_snippet: str = "",
+    is_vertex_express: bool = False,
+) -> AIProviderError:
+    """Map HTTP status codes / network failures into a sanitized Vietnamese AIProviderError."""
+    low_body = (body_snippet or "").lower()
+    if status_code == 403:
+        if provider.lower() == "gemini" and (
+            is_vertex_express
+            or "aiplatform" in low_body
+            or "vertex" in low_body
+            or "has not been used" in low_body
+            or "disabled" in low_body
+        ):
+            reason = (
+                "API Vertex AI chưa được bật cho project Google Cloud hoặc bị từ chối quyền truy cập. "
+                "Vui lòng bật API hoặc dùng key Google AI Studio."
+            )
+        else:
+            reason = (
+                "Bị từ chối quyền truy cập (HTTP 403). "
+                "Vui lòng kiểm tra quyền và cấu hình API key."
+            )
+    elif status_code in (400, 401):
+        reason = (
+            f"API key không hợp lệ hoặc yêu cầu bị từ chối xác thực (HTTP {status_code}). "
+            "Vui lòng kiểm tra cấu hình trong .env."
+        )
+    elif status_code == 429:
+        reason = (
+            "Đã vượt hạn mức sử dụng (quota) hoặc giới hạn tốc độ (HTTP 429). "
+            "Vui lòng thử lại sau."
+        )
+    elif status_code is not None and status_code >= 500:
+        reason = f"Dịch vụ AI tạm thời gặp lỗi máy chủ (HTTP {status_code}). Vui lòng thử lại sau."
+    elif status_code is not None:
+        reason = f"Dịch vụ AI phản hồi lỗi (HTTP {status_code}). Vui lòng thử lại sau."
+    else:
+        reason = (
+            "Không thể kết nối mạng hoặc hết thời gian chờ phản hồi. "
+            "Vui lòng kiểm tra kết nối mạng và thử lại."
+        )
+    return AIProviderError(provider=provider, reason=reason, status_code=status_code)
+
+
 class RetrievedChunk(BaseModel):
     """Authorized chunk returned by PreRetrievalRBACRetriever (Scenario 3 compliant)."""
 

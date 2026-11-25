@@ -277,3 +277,57 @@ def classify_conversational_intent(query: str) -> str | None:
                 return intent_name
 
     return None
+
+
+# General-knowledge / real-time questions that no enterprise document can answer.
+# Used ONLY to decide whether Scenario 1 may suggest "possibly related" documents:
+# for these queries the assistant always returns the strict abstention instead.
+OUT_OF_SCOPE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        # Current date / time
+        r"\bhom nay\b.*\b(ngay|thu)\b.*\b(bao nhieu|may|gi)\b",
+        r"\bhom nay (la )?(ngay|thu)\b",
+        r"\b(ngay|thu) (bao nhieu|may|gi) (hom nay|roi)\b",
+        r"\bbay gio (la )?may gio\b",
+        r"\bmay gio roi\b",
+        r"\bnam nay (la )?nam (bao nhieu|may|gi)\b",
+        r"\bwhat (day|date|time) is it\b",
+        r"\bwhat is (the )?(date|time) (today|now)\b",
+        # Weather, news, markets, sports
+        r"\bthoi tiet\b",
+        r"\bweather\b",
+        r"\btin tuc\b",
+        r"\b(gia|ty gia) (vang|bitcoin|usd|do la|do|xang|dau|co phieu|chung khoan)\b",
+        r"\bbitcoin\b",
+        r"\bco phieu\b",
+        r"\bchung khoan\b",
+        r"\bworld cup\b",
+        r"\bbong da\b",
+        r"\bvo dich\b",
+        # General trivia, cooking, creative writing, translation, arithmetic
+        r"\bthu do (cua|nuoc)\b",
+        r"\b(cong thuc )?nau (an|pho|mon|com|canh)\b",
+        r"\bpho bo\b",
+        r"\b(viet|lam|sang tac)\b.*\b(bai tho|bai hat|truyen ngan|cau chuyen)\b",
+        r"\bke (mot )?(chuyen|truyen)( cuoi)?\b",
+        r"\bdich (cau|doan|tu|sang)\b",
+        r"\btranslate\b",
+        r"\b\d+ ?(cong|tru|nhan|chia) ?\d+\b",
+        r"^(tinh )?[\d\s+*/x().-]*\d ?[+*/x-] ?\d[\d\s+*/x().-]*( bang (may|bao nhieu))?$",
+    )
+)
+
+
+def is_out_of_scope_query(query: str) -> bool:
+    """
+    Return True for general-knowledge / real-time questions (current date, weather, prices,
+    sports, trivia, creative writing, arithmetic...) that are outside any enterprise knowledge base.
+    """
+    cleaned = sanitize_user_query(query)
+    if not cleaned:
+        return False
+    plain = _strip_diacritics_lower(cleaned)
+    plain = re.sub(r"[^\w\s+*/x-]", " ", plain)
+    plain = re.sub(r"\s+", " ", plain).strip()
+    return any(p.search(plain) for p in OUT_OF_SCOPE_PATTERNS)

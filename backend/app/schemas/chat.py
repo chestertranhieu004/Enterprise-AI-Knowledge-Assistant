@@ -1,7 +1,7 @@
 # File: backend/app/schemas/chat.py
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas.common import VerificationStatus
 
@@ -14,6 +14,24 @@ class CitationItem(BaseModel):
     quote: str
     score: float
     verification_status: VerificationStatus = VerificationStatus.VERIFIED
+
+
+class RelatedDocumentItem(BaseModel):
+    """An authorized document that is topically related to the query but does not answer it."""
+
+    document_id: uuid.UUID
+    title: str
+    file_name: str
+    page_or_sheet: str
+    excerpt: str
+    score: float
+
+
+# answered: grounded answer with verified citations
+# related: no direct answer, but authorized documents that may be related are suggested (found=false)
+# not_found: strict Scenario 1 / 3 abstention (found=false)
+# conversational: social reply, no retrieval
+MatchLevel = Literal["answered", "related", "not_found", "conversational"]
 
 
 class ChatQueryRequest(BaseModel):
@@ -31,6 +49,8 @@ class ChatQueryResponse(BaseModel):
     citations: list[CitationItem] = Field(default_factory=list)
     suggested_queries: list[str] = Field(default_factory=list)
     latency_ms: int
+    match_level: MatchLevel = "not_found"
+    related_documents: list[RelatedDocumentItem] = Field(default_factory=list)
 
 
 class ChatMessageRead(BaseModel):

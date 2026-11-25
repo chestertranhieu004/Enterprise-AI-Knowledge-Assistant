@@ -162,6 +162,18 @@ export interface CitationItem {
   verification_status: VerificationStatus;
 }
 
+/** Authorized document that may relate to the query but does not answer it (Scenario 1 tier 2). */
+export interface RelatedDocumentItem {
+  document_id: string;
+  title: string;
+  file_name: string;
+  page_or_sheet: string;
+  excerpt: string;
+  score: number;
+}
+
+export type MatchLevel = 'answered' | 'related' | 'not_found' | 'conversational';
+
 export interface ChatQueryRequest {
   query: string;
   session_id?: string | null;
@@ -177,6 +189,8 @@ export interface ChatQueryResponse {
   citations: CitationItem[];
   suggested_queries: string[];
   latency_ms: number;
+  match_level?: MatchLevel;
+  related_documents?: RelatedDocumentItem[];
 }
 
 export interface ChatMessageRead {
@@ -189,6 +203,8 @@ export interface ChatMessageRead {
   suggested_queries: string[];
   latency_ms?: number | null;
   created_at: string;
+  match_level?: MatchLevel;
+  related_documents?: RelatedDocumentItem[];
 }
 
 export interface ChatSessionSummary {

@@ -1,6 +1,7 @@
 # File: backend/app/rag/__init__.py
 from app.rag.agent_router import classify_conversational_intent
 from app.rag.providers.base import (
+    AIProviderError,
     BaseEmbeddingProvider,
     BaseLLMProvider,
     RawCitationCandidate,
@@ -13,6 +14,7 @@ from app.rag.service import RAGService
 from app.rag.verifier import CitationVerifier, VerificationResult
 
 __all__ = [
+    "AIProviderError",
     "BaseEmbeddingProvider",
     "BaseLLMProvider",
     "CitationVerifier",
